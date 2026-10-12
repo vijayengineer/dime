@@ -260,7 +260,11 @@ export class DemoEngine {
     };
   }
 
-  private publishPrice() { this.priceFeed.ok(this.snapshot()); }
+  private publishPrice() {
+    // Live-feed mode: publish nothing until the first real snapshot — never a synthetic placeholder.
+    if (this.feedUrl && !this.external) return;
+    this.priceFeed.ok(this.snapshot());
+  }
 
   priceHistory(limit: number) { return this.history.slice(-limit); }
 
