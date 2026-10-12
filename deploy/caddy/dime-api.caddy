@@ -1,0 +1,25 @@
+# DIME backend site for the server's existing Caddy (imported from Cathena's Caddyfile).
+# Only read-only feed paths are routed for the demo. /debug, /internal, /proof, /mock are never exposed.
+api.dime.rndm.io {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+	@feed path /feed /feed/health /feed/history /feed/metrics
+	handle @feed {
+		reverse_proxy 127.0.0.1:8710
+	}
+	# Phase 2 (testnet): uncomment to expose the API and its WebSocket stream.
+	# handle /v1/* {
+	# 	reverse_proxy 127.0.0.1:8720
+	# }
+	# handle /health {
+	# 	reverse_proxy 127.0.0.1:8720
+	# }
+	handle {
+		respond "Not found" 404
+	}
+}

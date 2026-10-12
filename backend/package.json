@@ -1,0 +1,39 @@
+{
+  "name": "dime-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "pricing": "tsx src/pricing/main.ts",
+    "api": "tsx src/api/main.ts",
+    "keeper": "tsx src/keeper/main.ts",
+    "watchdog": "tsx src/watchdog/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "e2e": "tsx test/e2e.ts"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.3.1",
+    "@fastify/rate-limit": "^11.2.1",
+    "@fastify/websocket": "^11.3.4",
+    "better-sqlite3": "^13.0.3",
+    "fastify": "^5.12.5",
+    "jose": "^6.2.12",
+    "pino": "^10.4.0",
+    "tsx": "^4.23.15",
+    "viem": "^2.57.4",
+    "ws": "^8.22.0",
+    "zod": "^4.6.6"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^26.6.5",
+    "@types/ws": "^8.18.2",
+    "pino-pretty": "^13.2.0",
+    "typescript": "^7.0.2",
+    "vitest": "^3.2.7"
+  }
+}

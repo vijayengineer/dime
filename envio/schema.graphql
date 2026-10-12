@@ -1,0 +1,76 @@
+# DIME indexer schema. Envio is a read/index layer — not an oracle, not proof of fair value.
+# Amounts are token base units (USDC 6dp); prices are 8dp.
+
+type Activity {
+  id: ID!                  # txHash-logIndex[-suffix]
+  user: String! @index
+  kind: String!            # DEPOSIT | WITHDRAW | POSITION_OPENED | POSITION_SETTLED | RIGHTS_ISSUED | CLAIM | INTENT_CANCELLED
+  title: String!
+  amount: BigInt
+  txHash: String!
+  blockNumber: BigInt!
+  timestamp: BigInt!
+}
+
+type Position {
+  id: ID!
+  user: String! @index
+  route: String!           # MATCHED | HOUSE
+  side: String!            # LONG | SHORT
+  collateral: BigInt!
+  leverage: Int!
+  entryPrice: BigInt!
+  liquidationPrice: BigInt!
+  houseReservation: BigInt!
+  pairId: String
+  configVersion: Int!
+  openedAt: BigInt!
+  openTx: String!
+  status: String!          # OPEN | SETTLED
+  exitPrice: BigInt
+  grossPnl: BigInt
+  fee: BigInt
+  netPnl: BigInt
+  returned: BigInt
+  closeReason: String
+  settledAt: BigInt
+  closeTx: String
+}
+
+type HouseTotals {
+  id: ID!                  # "global"
+  reserveFunded: BigInt!
+  reserveWithdrawn: BigInt!
+  collectedLosses: BigInt!
+  netWinningPayouts: BigInt!
+  matchedFees: BigInt!
+  distributionsFunded: BigInt!
+  distributionsClaimed: BigInt!
+  deposits: BigInt!
+  withdrawals: BigInt!
+  opens: Int!
+  settlements: Int!
+  protocolState: String!
+  epoch: BigInt!
+  totalActiveRights: BigInt!
+  dimeIssued: BigInt!
+}
+
+type RightsAccount {
+  id: ID!                  # user
+  issuedTotal: BigInt!     # DIME issued on losses (18dp)
+  stakedNet: BigInt!       # stake − unstake (18dp)
+  claimedTotal: BigInt!    # USDC claimed
+  netLossHighWater: BigInt!
+  lastActivationEpoch: BigInt!
+}
+
+type EpochFunding {
+  id: ID!                  # epoch
+  eligibleNewEarnings: BigInt!
+  target: BigInt!
+  funded: BigInt!
+  limitedBy: String!
+  totalActiveAfter: BigInt
+  timestamp: BigInt!
+}

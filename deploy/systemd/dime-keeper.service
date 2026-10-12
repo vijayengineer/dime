@@ -1,0 +1,31 @@
+[Unit]
+Description=DIME keeper
+After=network-online.target dime-pricing.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dime
+Group=dime
+WorkingDirectory=/opt/dime/app/backend
+EnvironmentFile=/etc/dime/backend.env
+ExecStart=/usr/local/bin/node --import tsx src/keeper/main.ts
+Restart=on-failure
+RestartSec=3
+# hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/dime/app/backend/data
+ReadOnlyPaths=/etc/dime
+CapabilityBoundingSet=
+LockPersonality=true
+RestrictSUIDSGID=true
+MemoryMax=512M
+# Block the cloud metadata endpoint (instance credentials) for DIME processes
+IPAddressDeny=169.254.169.254
+Environment=HOME=/opt/dime
+
+[Install]
+WantedBy=multi-user.target

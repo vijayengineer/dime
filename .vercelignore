@@ -1,0 +1,18 @@
+# Vercel builds only the Next.js frontend. Never upload private or server-side material.
+assets/
+rndm_jenius
+rndm_jenius.*
+*.pem
+*.key
+.env
+.env.*
+!.env.example
+backend/
+envio/
+contracts/
+lib/
+broadcast/
+deploy/
+out/
+deployments/31337.json
+foundry.toml

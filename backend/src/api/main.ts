@@ -1,0 +1,370 @@
+import { randomUUID } from "node:crypto";
+import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
+import cors from "@fastify/cors";
+import rateLimit from "@fastify/rate-limit";
+import websocket from "@fastify/websocket";
+import type { WebSocket } from "ws";
+import { createRemoteJWKSet, jwtVerify } from "jose";
+import { verifyMessage, type Address, type Hex } from "viem";
+import { z } from "zod";
+import { loadConfig, readKey } from "../config";
+import { log } from "../log";
+import { Counters, Latency } from "../metrics";
+import { Store, type IntentRow, TERMINAL } from "../store/db";
+import { PriceClient } from "../pricing/client";
+import { BTC_MARKET, makeChain, parseOrder, positionIdFor, PROTOCOL_STATES, revertName, toWire, verifyClose, verifyOrder } from "../chain/chain";
+import { Executor } from "../chain/executor";
+import { EventWatcher, type SettlementWire } from "../chain/events";
+import { Matcher } from "../matching/matcher";
+import { autoExecution } from "../../../shared/execution";
+
+/* ================================================================ wiring */
+const cfg = loadConfig();
+const store = new Store(cfg.DB_PATH);
+const c = makeChain(cfg);
+const prices = new PriceClient(cfg.PRICING_URL);
+const relayer = new Executor(store, c, readKey(cfg.RELAYER_KEY_FILE, "relayer"), "relayer");
+const metrics = { quote: new Latency(), admit: new Latency(), close: new Latency(), counters: new Counters() };
+
+/* ---------------------------------------------------------------- chain state cache */
+interface ChainState {
+  config: Awaited<ReturnType<typeof readConfig>>;
+  house: Awaited<ReturnType<typeof readHouse>>;
+  state: (typeof PROTOCOL_STATES)[number];
+  allowlist: boolean;
+  at: number;
+}
+const readConfig = () => c.pub.readContract({ ...c.protocol, functionName: "activeConfig" });
+const readHouse = () => c.pub.readContract({ ...c.protocol, functionName: "houseStats" });
+let chainState: ChainState | null = null;
+async function refreshChainState() {
+  try {
+    const [config, house, st, allowlist] = await Promise.all([
+      readConfig(), readHouse(),
+      c.pub.readContract({ ...c.protocol, functionName: "protocolState" }),
+      c.pub.readContract({ ...c.protocol, functionName: "allowlistEnabled" }),
+    ]);
+    chainState = { config, house, state: PROTOCOL_STATES[st], allowlist, at: Date.now() };
+  } catch (e) { log.warn({ err: (e as Error).message }, "chain state refresh failed"); }
+}
+setInterval(refreshChainState, 1000);
+await refreshChainState();
+
+/* ---------------------------------------------------------------- stream hub */
+const channels = new Map<string, Set<WebSocket>>();
+function publish(channel: string, data: unknown) {
+  const subs = channels.get(channel);
+  if (!subs?.size) return;
+  const msg = toWire({ channel, data });
+  for (const ws of subs) if (ws.readyState === ws.OPEN && ws.bufferedAmount < 1 << 20) ws.send(msg);
+}
+
+function intentWire(r: IntentRow) {
+  return {
+    id: r.id,
+    draft: {
+      side: r.side === 0 ? "LONG" : "SHORT", collateral: r.collateral, leverage: r.leverage,
+      routes: { matched: !!(r.route_mask & 1), houseFallback: !!(r.route_mask & 2) },
+      matchWindowMs: r.match_window_ms, slippageBps: r.slippage_bps,
+    },
+    status: r.status, route: r.route ?? undefined, reason: r.reason ?? undefined,
+    matchDeadline: r.match_deadline * 1000, expiresAt: r.expiry * 1000,
+    txHash: r.tx_id ?? undefined, positionId: r.position_id ?? undefined, updatedAt: r.updated_at,
+    timeline: JSON.parse(r.timeline),
+  };
+}
+const notify = (r: IntentRow) => publish(`intents:${r.user}`, intentWire(r));
+
+/* ---------------------------------------------------------------- matcher */
+const matcher = new Matcher(
+  store, prices,
+  {
+    openMatched: (L, S, payload) => relayer.submit("OPEN_MATCHED", `${L.id},${S.id}`, "openMatched",
+      [parseOrder(JSON.parse(L.message)), L.signature, parseOrder(JSON.parse(S.message)), S.signature, { payload }]),
+    openHouse: (r, payload) => relayer.submit("OPEN_HOUSE", r.id, "openHouse", [parseOrder(JSON.parse(r.message)), r.signature, { payload }]),
+  },
+  {
+    async check(r) {
+      const user = r.user as Address;
+      const [free, pos, used] = await Promise.all([
+        c.pub.readContract({ ...c.protocol, functionName: "freeBalance", args: [user] }),
+        c.pub.readContract({ ...c.protocol, functionName: "positionOf", args: [user] }),
+        c.pub.readContract({ ...c.protocol, functionName: "nonceUsed", args: [user, BigInt(r.nonce)] }),
+      ]);
+      if (used) return "Request was cancelled on-chain or already used. Nothing was opened.";
+      if (pos.user !== "0x0000000000000000000000000000000000000000") return "You already have an open position.";
+      if (free < BigInt(r.collateral)) return "Not enough free balance. Nothing was opened.";
+      return null;
+    },
+  },
+  notify,
+  {
+    maxQueuePerBucket: cfg.MAX_QUEUE_PER_BUCKET,
+    proofMaxAgeMs: 2000,
+    submitMarginMs: 1200,
+    houseAfterDeadlineMs: 1500,
+    positionIdFor: (r) => positionIdFor(cfg.CHAIN_ID, cfg.manifest.protocol, r.user as Address, BigInt(r.nonce)),
+  },
+);
+setInterval(() => void matcher.tick().catch((e) => log.error({ err: e.message }, "matcher tick failed")), 200);
+
+/* ---------------------------------------------------------------- events */
+const watcher = new EventWatcher(c, store, cfg.manifest.deploymentBlock);
+watcher.on("opened", (o: { id: string; user: string; txHash: string; block: bigint }) => {
+  const r = store.intentByPosition(o.id) ?? store.latestIntentForUser(o.user);
+  if (r && r.status === "SUBMITTED" && positionIdFor(cfg.CHAIN_ID, cfg.manifest.protocol, r.user as Address, BigInt(r.nonce)).toLowerCase() === o.id) {
+    if (store.transition(r.id, ["SUBMITTED"], "OPENED", { tx_id: o.txHash, position_id: o.id }, "Confirmed by event")) notify(store.getIntent(r.id)!);
+  }
+});
+watcher.on("settled", (s: SettlementWire) => publish(`settlements:${s.user}`, s));
+watcher.start();
+setInterval(() => void relayer.reconcile(), 10_000);
+
+prices.on("snapshot", (s) => publish("price:BTC-USD", s));
+
+/* ================================================================ http */
+const app = Fastify({ logger: false, bodyLimit: 16 * 1024 });
+await app.register(cors, { origin: cfg.CORS_ORIGINS.split(",").map((s) => s.trim()), methods: ["GET", "POST"] });
+await app.register(rateLimit, {
+  max: cfg.RATE_LIMIT_PER_MIN, timeWindow: "1 minute",
+  keyGenerator: (req) => (req as FastifyRequest & { userId?: string }).userId ?? req.ip,
+});
+await app.register(websocket, { options: { maxPayload: 4096 } });
+
+const jwks = cfg.PRIVY_APP_ID ? createRemoteJWKSet(new URL(`https://auth.privy.io/api/v1/apps/${cfg.PRIVY_APP_ID}/jwks.json`)) : null;
+async function authenticate(req: FastifyRequest, reply: FastifyReply) {
+  if (cfg.AUTH_MODE === "none") return;
+  const h = req.headers.authorization;
+  if (!h?.startsWith("Bearer ") || !jwks) return reply.code(401).send(err("UNAUTHENTICATED", "Sign in required"));
+  try {
+    const { payload } = await jwtVerify(h.slice(7), jwks, { issuer: "privy.io", audience: cfg.PRIVY_APP_ID });
+    (req as FastifyRequest & { userId?: string }).userId = String(payload.sub);
+  } catch {
+    return reply.code(401).send(err("UNAUTHENTICATED", "Invalid session"));
+  }
+}
+const err = (code: string, message: string, extra: Record<string, unknown> = {}) => ({ error: { code, message, ...extra } });
+const json = (reply: FastifyReply, code: number, body: unknown) => reply.code(code).header("content-type", "application/json").send(toWire(body));
+
+app.get("/health", async (_q, reply) => {
+  const proof = prices.freshProof(3000);
+  const ok = !!chainState && Date.now() - chainState.at < 5000 && !!proof;
+  return json(reply, ok ? 200 : 503, {
+    ok, price: prices.snapshot?.quality ?? "NONE", proofAgeMs: prices.proof ? Date.now() - prices.proof.tsMs : null,
+    chainStateAgeMs: chainState ? Date.now() - chainState.at : null, indexedBlock: watcher.lastBlock, headBlock: watcher.headBlock,
+    relayerQueue: relayer.queueDepth, protocolState: chainState?.state,
+  });
+});
+
+app.get("/v1/manifest", async (_q, reply) => json(reply, 200, cfg.manifest));
+
+app.get("/v1/markets/BTC-USD/history", async (req, reply) => {
+  const limit = Math.min(3600, Number((req.query as { limit?: string }).limit ?? 600));
+  return json(reply, 200, { points: prices.history.slice(-limit) });
+});
+
+/* ---------------------------------------------------------------- quotes */
+const DraftSchema = z.object({
+  market: z.literal("BTC-USD").optional(),
+  side: z.enum(["LONG", "SHORT"]),
+  collateral: z.string().regex(/^\d+$/),
+  leverage: z.number().int().min(1).max(1000),
+  // Optional: the server auto-selects these (shared/execution.ts); client values are ignored.
+  routes: z.object({ matched: z.boolean(), houseFallback: z.boolean() }).optional(),
+  matchWindowMs: z.number().int().min(0).max(60_000).optional(),
+  slippageBps: z.number().int().min(0).max(500).optional(),
+});
+const quotes = new Map<string, { at: number }>();
+
+app.post("/v1/quotes", { preHandler: authenticate }, async (req, reply) => {
+  const t0 = performance.now();
+  const d = DraftSchema.safeParse(req.body);
+  if (!d.success) return json(reply, 400, err("BAD_REQUEST", d.error.issues[0].message));
+  const proof = prices.freshProof(2500);
+  if (!proof || !chainState) return json(reply, 503, err("PRICE_UNAVAILABLE", "No fresh verified price; new positions are paused"));
+  const { config: k, house: h } = chainState;
+  const px = BigInt(proof.price);
+  const coll = BigInt(d.data.collateral);
+  if (coll < k.minCollateral || coll > k.maxCollateral) return json(reply, 400, err("BAD_SIZE", "Margin outside allowed range"));
+  if (d.data.leverage > k.maxLeverage) return json(reply, 400, err("BAD_SIZE", "Leverage above maximum"));
+  const isLong = d.data.side === "LONG";
+  const houseCheckReason = (() => {
+    const res = coll * BigInt(k.houseReservationMultiple);
+    const nn = h.netDirectionalNotional + (isLong ? coll * BigInt(d.data.leverage) : -(coll * BigInt(d.data.leverage)));
+    const ab = (x: bigint) => (x < 0n ? -x : x);
+    if (chainState.state !== "OPEN") return `Protocol is ${chainState.state}`;
+    if (h.openHousePositions >= k.maxConcurrentHousePositions) return "House position slots are full";
+    if (res > h.availableCapacity) return "Not enough house reserve capacity";
+    if (ab(nn) > h.reserve * BigInt(k.houseMaxNetNotionalMultiple) && ab(nn) > ab(h.netDirectionalNotional)) return "House is at its concentration limit";
+    return undefined;
+  })();
+  const auto = autoExecution({ leverage: d.data.leverage, maintenanceBps: k.maintenanceBps, houseAvailable: !houseCheckReason });
+  const slip = (px * BigInt(auto.slippageBps)) / 10_000n;
+  const move = (px * (10_000n - BigInt(k.maintenanceBps))) / (10_000n * BigInt(d.data.leverage));
+  const notional = coll * BigInt(d.data.leverage);
+  const reservation = coll * BigInt(k.houseReservationMultiple);
+  const houseReason = houseCheckReason;
+  const gross = (notional * 5n) / 10_000n; // 0.05% example move
+  const fee = (gross * BigInt(k.profitFeeBps) + 9_999n) / 10_000n;
+  const id = randomUUID();
+  quotes.set(id, { at: Date.now() });
+  if (quotes.size > 10_000) quotes.delete(quotes.keys().next().value!);
+  const latency = performance.now() - t0;
+  metrics.quote.record(latency);
+  return json(reply, 200, {
+    id, indicativeEntry: px, priceLimit: isLong ? px + slip : px - slip, liquidationPrice: isLong ? px - move : px + move,
+    feeBps: k.profitFeeBps, exampleMovePct: 0.05, exampleNetProfit: gross - fee, exampleFee: fee,
+    capacity: {
+      houseAvailable: !houseReason, houseReason, houseReservationRequired: reservation, houseCapacityRemaining: h.availableCapacity,
+      housePositionsRemaining: k.maxConcurrentHousePositions - h.openHousePositions,
+      matchedPairsRemaining: k.maxConcurrentMatchedPairs - h.openMatchedPairs,
+      matchedOppositeWaiting: matcher.waiting(d.data.collateral, d.data.leverage, isLong ? 1 : 0),
+    },
+    configVersion: k.version, expiresAt: Date.now() + 10_000, serverLatencyMs: Math.round(latency * 1000) / 1000,
+    auto,
+  });
+});
+
+/* ---------------------------------------------------------------- intents */
+const IntentBody = z.object({
+  quoteId: z.string().optional(),
+  message: z.record(z.string(), z.unknown()),
+  signature: z.string().regex(/^0x[0-9a-fA-F]+$/),
+  matchWindowMs: z.number().int().optional(),
+  slippageBps: z.number().int().optional(),
+});
+
+app.post("/v1/intents", { preHandler: authenticate }, async (req, reply) => {
+  const t0 = performance.now();
+  const key = String(req.headers["idempotency-key"] ?? "");
+  if (!key) return json(reply, 400, err("BAD_REQUEST", "Idempotency-Key header required"));
+  const prior = store.idem(`intent:${key}`);
+  if (prior) return reply.code(200).header("content-type", "application/json").send(prior);
+  const b = IntentBody.safeParse(req.body);
+  if (!b.success) return json(reply, 400, err("BAD_REQUEST", b.error.issues[0].message));
+  let m;
+  try { m = parseOrder(b.data.message); } catch { return json(reply, 400, err("BAD_REQUEST", "Malformed intent")); }
+  const sig = b.data.signature as Hex;
+  if (m.market.toLowerCase() !== BTC_MARKET.toLowerCase()) return json(reply, 400, err("BAD_MARKET", "BTC-USD only"));
+  if (!(await verifyOrder(c, m, sig))) return json(reply, 401, err("BAD_SIGNATURE", "Signature does not match the request"));
+  if (!chainState) return json(reply, 503, err("UNAVAILABLE", "Chain state unavailable"));
+  if (chainState.state !== "OPEN") return json(reply, 409, err("STATE", `Protocol is ${chainState.state}`));
+  if (m.configVersion !== chainState.config.version) return json(reply, 409, err("CONFIG_CHANGED", "Configuration changed — review again"));
+  const nowS = Math.floor(Date.now() / 1000);
+  if (Number(m.expiry) <= nowS) return json(reply, 409, err("EXPIRED", "Request already expired"));
+  if (m.routeMask === 0 || m.routeMask > 3) return json(reply, 400, err("BAD_ROUTE", "Choose at least one route"));
+  if (store.liveIntentForUser(m.user)) return json(reply, 409, err("PENDING", "A request is already pending"));
+  if (store.intentByNonce(m.user, m.nonce.toString())) return json(reply, 409, err("NONCE_USED", "Nonce already used"));
+  const user = m.user.toLowerCase();
+  const row: IntentRow = {
+    id: randomUUID(), user, nonce: m.nonce.toString(), status: m.routeMask & 1 ? "MATCHING" : "SUBMITTED",
+    side: m.side as 0 | 1, collateral: m.collateral.toString(), leverage: m.leverage, route_mask: m.routeMask,
+    match_deadline: Number(m.matchDeadline), expiry: Number(m.expiry), price_limit: m.priceLimit.toString(),
+    config_version: m.configVersion, match_window_ms: b.data.matchWindowMs ?? Math.max(0, (Number(m.matchDeadline) - nowS) * 1000),
+    slippage_bps: b.data.slippageBps ?? 0, message: toWire(m), signature: sig, route: m.routeMask & 1 ? null : "HOUSE",
+    reason: null, tx_id: null, position_id: null,
+    timeline: JSON.stringify([{ status: m.routeMask & 1 ? "MATCHING" : "SUBMITTED", at: Date.now() }]),
+    created_at: Date.now(), updated_at: Date.now(),
+  };
+  if (row.status === "MATCHING" && !matcher.canAdmit(row)) return json(reply, 429, err("QUEUE_FULL", "Too many waiting requests at this size; try again"));
+  store.insertIntent(row);
+  const body = toWire(intentWire(row));
+  store.saveIdem(`intent:${key}`, body);
+  metrics.admit.record(performance.now() - t0);
+  metrics.counters.inc("intents.admitted");
+  notify(row);
+  void matcher.onNew(row);
+  return reply.code(201).header("content-type", "application/json").send(body);
+});
+
+app.get("/v1/intents/:id", async (req, reply) => {
+  const r = store.getIntent((req.params as { id: string }).id);
+  return r ? json(reply, 200, intentWire(r)) : json(reply, 404, err("NOT_FOUND", "No such request"));
+});
+
+/** Cancel requires a personal_sign of "DIME cancel request <id>" by the intent's wallet. */
+app.post("/v1/intents/:id/cancel", { preHandler: authenticate }, async (req, reply) => {
+  const id = (req.params as { id: string }).id;
+  const sig = (req.body as { signature?: string } | undefined)?.signature;
+  const r = store.getIntent(id);
+  if (!r) return json(reply, 404, err("NOT_FOUND", "No such request"));
+  if (!sig || !(await verifyMessage({ address: r.user as Address, message: `DIME cancel request ${id}`, signature: sig as Hex }))) {
+    return json(reply, 401, err("BAD_SIGNATURE", "Cancellation must be signed by the requesting wallet"));
+  }
+  if (TERMINAL.includes(r.status)) return json(reply, 409, err("TERMINAL", `Already ${r.status}`));
+  if (!store.transition(id, ["MATCHING"], "CANCELLED", { reason: "Cancelled by you. Nothing was opened." })) {
+    return json(reply, 409, err("TOO_LATE", "Already submitted; you can still invalidate the nonce on-chain with cancelNonce"));
+  }
+  notify(store.getIntent(id)!);
+  return json(reply, 200, intentWire(store.getIntent(id)!));
+});
+
+/* ---------------------------------------------------------------- close */
+app.post("/v1/close", { preHandler: authenticate }, async (req, reply) => {
+  const t0 = performance.now();
+  const key = String(req.headers["idempotency-key"] ?? "");
+  if (!key) return json(reply, 400, err("BAD_REQUEST", "Idempotency-Key header required"));
+  const prior = store.idem(`close:${key}`);
+  if (prior) return reply.code(200).header("content-type", "application/json").send(prior);
+  const b = req.body as { message?: Record<string, string>; signature?: string };
+  if (!b?.message || !b.signature) return json(reply, 400, err("BAD_REQUEST", "message and signature required"));
+  const m = { user: b.message.user as Address, positionId: b.message.positionId as Hex, expiry: BigInt(b.message.expiry), nonce: BigInt(b.message.nonce) };
+  if (!(await verifyClose(c, m, b.signature as Hex))) return json(reply, 401, err("BAD_SIGNATURE", "Signature does not match"));
+  const proof = prices.freshProof(2000);
+  if (!proof) return json(reply, 503, err("PRICE_UNAVAILABLE", "No fresh verified price; close is held until the reference recovers"));
+  const res = await relayer.submit("CLOSE", m.positionId, "close", [m, b.signature, { payload: proof.payload }]);
+  metrics.close.record(performance.now() - t0);
+  if (res.status === "FAILED") return json(reply, 409, err("REJECTED", `Close rejected (${res.revert ?? res.error})`, { revert: res.revert }));
+  const body = toWire({ txHash: res.hash, status: res.status, block: res.block });
+  store.saveIdem(`close:${key}`, body);
+  return reply.code(200).header("content-type", "application/json").send(body);
+});
+
+/* ---------------------------------------------------------------- metrics */
+app.get("/v1/metrics", async (_q, reply) => {
+  let pricing: unknown = null;
+  try { pricing = await (await fetch(cfg.PRICING_URL.replace(/^ws/, "http").replace("/internal", "/metrics"))).json(); } catch { /* reported as null */ }
+  return json(reply, 200, {
+    measuredAt: new Date().toISOString(),
+    note: "Server-side measurements since process start. Sample counts included; no extrapolation.",
+    quoteServerMs: metrics.quote.summary(),
+    intentAdmissionMs: metrics.admit.summary(),
+    matchWaitMs: matcher.matchWait.summary(),
+    admitToOpenedMs: matcher.admitToOpen.summary(),
+    relayerSendToInclusionMs: relayer.sendToInclusion.summary(),
+    closeRequestToResultMs: metrics.close.summary(),
+    outcomes: { ...matcher.outcomes.toJSON(), ...metrics.counters.toJSON() },
+    pricing,
+  });
+});
+
+/* ---------------------------------------------------------------- websocket */
+app.register(async (f) => {
+  f.get("/v1/stream", { websocket: true }, (socket: WebSocket) => {
+    const mine = new Set<string>();
+    socket.on("message", (buf: Buffer) => {
+      let m: { op?: string; channel?: string };
+      try { m = JSON.parse(buf.toString()); } catch { return; }
+      if (m.op === "subscribe" && typeof m.channel === "string" && /^(price:BTC-USD|(intents|settlements|tx):0x[0-9a-fA-F]{40})$/.test(m.channel)) {
+        const ch = m.channel.toLowerCase().replace("price:btc-usd", "price:BTC-USD");
+        if (mine.size >= 8) return;
+        mine.add(ch);
+        if (!channels.has(ch)) channels.set(ch, new Set());
+        channels.get(ch)!.add(socket);
+        if (ch === "price:BTC-USD" && prices.snapshot) socket.send(toWire({ channel: ch, data: prices.snapshot }));
+        if (ch.startsWith("intents:")) { const r = store.latestIntentForUser(ch.slice(8)); if (r) socket.send(toWire({ channel: ch, data: intentWire(r) })); }
+      }
+    });
+    socket.on("close", () => { for (const ch of mine) channels.get(ch)?.delete(socket); });
+  });
+});
+
+await app.listen({ port: cfg.API_PORT, host: cfg.API_HOST });
+log.info({ port: cfg.API_PORT, relayer: relayer.address, chainId: cfg.CHAIN_ID, stage: cfg.manifest.stage }, "api up");
+
+// Recover requests that were mid-flight when the process stopped.
+for (const r of store.intentsByStatus("SUBMITTED")) {
+  if (!r.tx_id) log.warn({ id: r.id }, "SUBMITTED intent without tx on start; awaiting event or expiry");
+}
+process.on("SIGTERM", async () => { watcher.stop(); prices.close(); await app.close(); process.exit(0); });
+export { revertName };

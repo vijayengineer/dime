@@ -1,0 +1,28 @@
+node_modules
+.next
+out
+*.tsbuildinfo
+next-env.d.ts
+.env*.local
+.env
+contracts/out
+contracts/cache
+# local chain + generated
+deployments/31337.json
+broadcast/*/31337/
+envio/.envio/
+envio/generated/
+envio/node_modules/
+backend/node_modules/
+backend/data/
+# private: never commit
+assets/
+rndm_jenius
+rndm_jenius.*
+*.pem
+*.key
+id_*
+
+# OS / tool caches
+.DS_Store
+cache/

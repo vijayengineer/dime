@@ -1,0 +1,17 @@
+{
+  "name": "dime-indexer",
+  "private": true,
+  "scripts": {
+    "codegen": "envio codegen",
+    "dev": "envio dev",
+    "start": "envio start",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "envio": "^3.14.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2"
+  }
+}
