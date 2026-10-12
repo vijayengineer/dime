@@ -1,6 +1,6 @@
 # DIME backend site for the server's existing Caddy (imported from Cathena's Caddyfile).
 # Only read-only feed paths are routed for the demo. /debug, /internal, /proof, /mock are never exposed.
-api.dime.rndm.io {
+api-dime.rndm.io {
 	encode zstd gzip
 	header {
 		Strict-Transport-Security "max-age=31536000"
