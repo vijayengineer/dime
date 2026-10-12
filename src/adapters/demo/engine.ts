@@ -280,6 +280,7 @@ export class DemoEngine {
     this.feedUrl = url;
     this.external = null;
     this.history = []; // never show synthetic history alongside live data
+    this.priceFeed.reset(); // drop the synthetic snapshot published by the constructor
     const httpBase = url.replace(/^ws/, "http").replace(/\/feed$/, "");
     fetch(`${httpBase}/feed/history?limit=600`).then((r) => r.json()).then((j: { points: { t: number; price: string }[] }) => {
       if (j.points?.length) this.history = j.points.map((p) => ({ t: p.t, price: BigInt(p.price) }));

@@ -17,6 +17,9 @@ export class FeedHub<T> {
 
   ok(value: T) { this.emit({ status: "ok", value, at: Date.now() }); }
 
+  /** Drop any cached value (e.g. a placeholder) so new subscribers see "loading". */
+  reset() { this.emit({ status: "loading" }); }
+
   error(error: string) {
     const last = this.current.status === "ok" ? this.current.value : this.current.status === "error" ? this.current.last : undefined;
     this.emit({ status: "error", error, at: Date.now(), last });
