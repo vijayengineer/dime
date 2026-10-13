@@ -92,10 +92,18 @@ export interface TxAdapter {
   subscribe(cb: Listener<TxProgress[]>): Unsubscribe;
 }
 
-/** Terms of Use acceptance for the signed-in wallet (signed message, recorded by the API). */
-export interface TermsAdapter {
-  accepted(address: Address): Promise<boolean>;
-  accept(address: Address): Promise<void>;
+/** Joining the live test: signed Terms of Use plus, while invite-only, a capped invite code. Enforced by the API. */
+export interface AccessStatus {
+  terms: boolean;
+  invited: boolean;
+  inviteOnly: boolean;
+  slotsLeft: number | null;
+  maxWallets: number | null;
+}
+export interface AccessAdapter {
+  status(address: Address): Promise<AccessStatus>;
+  /** Signs the current terms with the wallet and submits them with the invite code. */
+  join(address: Address, code: string): Promise<AccessStatus>;
 }
 
 /** Demo-only controls. Absent in live mode. */
@@ -135,6 +143,6 @@ export interface Services {
   rights: RightsAdapter;
   history: HistoryAdapter;
   tx: TxAdapter;
-  terms: TermsAdapter;
+  access: AccessAdapter;
   demo?: DemoControls;
 }

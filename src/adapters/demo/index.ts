@@ -46,8 +46,11 @@ export function createDemoServices(): Services {
       subscribeIndexer: (cb) => e.indexerFeed.subscribe(cb),
     },
     tx: { subscribe: (cb) => { cb([]); return e.txs.subscribe(cb); } },
-    // Paper mode moves no real money, so there is nothing to accept.
-    terms: { accepted: async () => true, accept: async () => {} },
+    // Paper mode moves no real money, so there is nothing to join.
+    access: (() => {
+      const open = { terms: true, invited: true, inviteOnly: false, slotsLeft: null, maxWallets: null };
+      return { status: async () => open, join: async () => open };
+    })(),
     demo: {
       get scenario() { return e.scenario; },
       subscribe: (cb) => { cb(e.scenario); return e.scenarioChanged.subscribe(cb); },

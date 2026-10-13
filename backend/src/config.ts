@@ -49,6 +49,13 @@ const Env = z.object({
   AUTH_MODE: z.enum(["privy", "none"]).default("privy"),
   PRIVY_APP_ID: z.string().optional(),
   ENVIO_API_TOKEN: z.string().optional(),
+  /** Invite-only live test: wallets join with this code (case-insensitive), up to MAX_INVITED. Unset = open to all. */
+  INVITE_CODE: z.string().optional(),
+  MAX_INVITED: z.coerce.number().default(20),
+  /** One-time MON top-up for joining wallets with too little gas. Unset = no top-ups. */
+  FAUCET_KEY_FILE: z.string().optional(),
+  FAUCET_DRIP_WEI: z.coerce.bigint().default(100_000_000_000_000_000n),
+  FAUCET_MIN_BALANCE_WEI: z.coerce.bigint().default(20_000_000_000_000_000n),
   MAX_QUEUE_PER_BUCKET: z.coerce.number().default(100),
   RATE_LIMIT_PER_MIN: z.coerce.number().default(60),
   KEEPER_INTERVAL_MS: z.coerce.number().default(1000),

@@ -14,7 +14,7 @@ import type {
 } from "@/domain/types";
 import { Emitter, FeedHub } from "../feed";
 import { decodePriceWire } from "../priceWire";
-import { ServiceError, type Services } from "../types";
+import { ServiceError, type AccessStatus, type Services } from "../types";
 import { chalkAbi, dimeTokenAbi, erc20Abi } from "./abi";
 import { termsMessage } from "@shared/terms";
 import type { LiveEnv } from "./env";
@@ -501,15 +501,12 @@ export function createLiveServices(env: LiveEnv, wallet: WalletBridge): Services
 
     tx: { subscribe: (cb) => { cb(txList); return txEmitter.subscribe(cb); } },
 
-    terms: {
-      async accepted(address) {
-        const r = await api<{ accepted: boolean }>(`/v1/terms/${address}`);
-        return r.accepted;
-      },
-      async accept(address) {
+    access: {
+      status: (address) => api<AccessStatus>(`/v1/access/${address}`),
+      async join(address, code) {
         const w = await wallet.getWalletClient();
         const signature = await w.signMessage({ account: address, message: termsMessage(address) });
-        await api("/v1/terms", { method: "POST", body: JSON.stringify({ address, signature }) });
+        return api<AccessStatus>("/v1/access", { method: "POST", body: JSON.stringify({ address, signature, code }) });
       },
     },
   };

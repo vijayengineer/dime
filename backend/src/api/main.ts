@@ -17,6 +17,7 @@ import { Executor } from "../chain/executor";
 import { EventWatcher, type SettlementWire } from "../chain/events";
 import { Matcher } from "../matching/matcher";
 import { EnvioIndexer } from "../indexer/envio";
+import { GasFaucet } from "../faucet/faucet";
 import { autoExecution } from "../../../shared/execution";
 import { TERMS_VERSION, termsMessage } from "../../../shared/terms";
 
@@ -123,6 +124,13 @@ watcher.start();
 setInterval(() => void relayer.reconcile(), 10_000);
 
 prices.on("snapshot", (s) => publish("price:BTC-USD", s));
+
+/* ---------------------------------------------------------------- invite-only live test + gas top-ups */
+const inviteOnly = !!cfg.INVITE_CODE;
+const faucet = cfg.FAUCET_KEY_FILE ? new GasFaucet(c, readKey(cfg.FAUCET_KEY_FILE, "faucet"), store, cfg.FAUCET_DRIP_WEI, cfg.FAUCET_MIN_BALANCE_WEI) : null;
+if (inviteOnly) log.info({ max: cfg.MAX_INVITED, joined: store.invitedCount() }, "invite-only live test");
+if (faucet) log.info({ faucet: faucet.address }, "gas faucet enabled");
+const canTrade = (address: string) => store.hasAcceptedTerms(address, TERMS_VERSION) && (!inviteOnly || store.isInvited(address));
 
 /* ---------------------------------------------------------------- envio (HyperRPC) */
 const envio = cfg.ENVIO_API_TOKEN
@@ -261,6 +269,7 @@ app.post("/v1/intents", { preHandler: authenticate }, async (req, reply) => {
   if (m.market.toLowerCase() !== BTC_MARKET.toLowerCase()) return json(reply, 400, err("BAD_MARKET", "BTC-USD only"));
   if (!(await verifyOrder(c, m, sig))) return json(reply, 401, err("BAD_SIGNATURE", "Signature does not match the request"));
   if (!store.hasAcceptedTerms(m.user, TERMS_VERSION)) return json(reply, 403, err("TERMS_REQUIRED", "Accept the Terms of Use before trading"));
+  if (!canTrade(m.user)) return json(reply, 403, err("INVITE_REQUIRED", "Live trading is invite-only right now. Join with an invite code first."));
   if (!chainState) return json(reply, 503, err("UNAVAILABLE", "Chain state unavailable"));
   if (chainState.state !== "OPEN") return json(reply, 409, err("STATE", `Protocol is ${chainState.state}`));
   if (m.configVersion !== chainState.config.version) return json(reply, 409, err("CONFIG_CHANGED", "Configuration changed — review again"));
@@ -350,6 +359,35 @@ app.post("/v1/terms", async (req, reply) => {
   if (!ok) return json(reply, 401, err("BAD_SIGNATURE", "Signature does not match the current terms"));
   store.acceptTerms(b.address, TERMS_VERSION, b.signature);
   return json(reply, 200, { version: TERMS_VERSION, accepted: true });
+});
+
+const accessView = (address: string) => ({
+  termsVersion: TERMS_VERSION, terms: store.hasAcceptedTerms(address, TERMS_VERSION),
+  inviteOnly, invited: !inviteOnly || store.isInvited(address),
+  slotsLeft: inviteOnly ? Math.max(0, cfg.MAX_INVITED - store.invitedCount()) : null, maxWallets: inviteOnly ? cfg.MAX_INVITED : null,
+});
+app.get("/v1/access/:address", async (req, reply) => {
+  const { address } = req.params as { address: string };
+  if (!/^0x[0-9a-fA-F]{40}$/.test(address)) return json(reply, 400, err("BAD_ADDRESS", "Expected a 0x address"));
+  return json(reply, 200, accessView(address));
+});
+/** Join the live test: a signature over the current terms proves wallet ownership; the invite code gates a capped number of wallets. */
+app.post("/v1/access", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async (req, reply) => {
+  const b = req.body as { address?: string; signature?: string; code?: string } | undefined;
+  if (!b?.address || !/^0x[0-9a-fA-F]{40}$/.test(b.address) || !b.signature || !/^0x[0-9a-fA-F]+$/.test(b.signature)) {
+    return json(reply, 400, err("BAD_REQUEST", "address and signature required"));
+  }
+  const address = b.address as Address;
+  const ok = await c.pub.verifyMessage({ address, message: termsMessage(address), signature: b.signature as Hex }).catch(() => false);
+  if (!ok) return json(reply, 401, err("BAD_SIGNATURE", "Signature does not match the current terms"));
+  if (inviteOnly && !store.isInvited(address)) {
+    if ((b.code ?? "").trim().toUpperCase() !== cfg.INVITE_CODE!.trim().toUpperCase()) return json(reply, 403, err("BAD_INVITE", "That invite code isn't valid"));
+    if (!store.invite(address, cfg.MAX_INVITED)) return json(reply, 409, err("FULL", `The live test is full (${cfg.MAX_INVITED} wallets)`));
+  }
+  store.acceptTerms(address, TERMS_VERSION, b.signature);
+  // Gas top-up runs in the background; the response does not wait for the transfer.
+  if (faucet && canTrade(address)) void faucet.topUp(address);
+  return json(reply, 200, accessView(address));
 });
 
 app.get("/v1/indexer", async (_q, reply) => (envio ? json(reply, 200, envio.view()) : json(reply, 503, err("INDEXER_DISABLED", "Indexer not configured"))));

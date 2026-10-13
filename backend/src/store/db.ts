@@ -92,6 +92,9 @@ export class Store {
         opened_block INTEGER NOT NULL, open_tx TEXT NOT NULL, settled INTEGER NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS positions_open ON positions(settled);
+      CREATE TABLE IF NOT EXISTS invites (
+        address TEXT PRIMARY KEY, invited_at INTEGER NOT NULL, drip_tx TEXT
+      );
       CREATE TABLE IF NOT EXISTS terms (
         address TEXT NOT NULL, version TEXT NOT NULL, signature TEXT NOT NULL, accepted_at INTEGER NOT NULL,
         PRIMARY KEY (address, version)
@@ -106,6 +109,21 @@ export class Store {
   hasAcceptedTerms(address: string, version: string) {
     return !!this.db.prepare("SELECT 1 FROM terms WHERE address = ? AND version = ?").get(address.toLowerCase(), version);
   }
+
+  /* invite-only live test */
+  isInvited(address: string) { return !!this.db.prepare("SELECT 1 FROM invites WHERE address = ?").get(address.toLowerCase()); }
+  invitedCount() { return (this.db.prepare("SELECT COUNT(*) AS n FROM invites").get() as { n: number }).n; }
+  /** Adds the wallet if there is room; returns true if it is (now) invited. Atomic, so the cap holds under concurrency. */
+  invite(address: string, max: number): boolean {
+    return this.db.transaction(() => {
+      if (this.isInvited(address)) return true;
+      if (this.invitedCount() >= max) return false;
+      this.db.prepare("INSERT INTO invites (address, invited_at) VALUES (?, ?)").run(address.toLowerCase(), Date.now());
+      return true;
+    })();
+  }
+  dripTx(address: string) { return (this.db.prepare("SELECT drip_tx FROM invites WHERE address = ?").get(address.toLowerCase()) as { drip_tx: string | null } | undefined)?.drip_tx ?? null; }
+  setDripTx(address: string, tx: string) { this.db.prepare("UPDATE invites SET drip_tx = ? WHERE address = ?").run(tx, address.toLowerCase()); }
 
   /* intents */
   insertIntent(r: IntentRow) {

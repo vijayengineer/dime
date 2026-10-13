@@ -7,6 +7,7 @@ import { exampleNetProfit, notionalOf } from "@/domain/math";
 import type { Balances, OrderDraft, ProtocolState, Quote, Side } from "@/domain/types";
 import { record } from "@/state/metrics";
 import { useServices } from "@/state/services";
+import { useAccess } from "../AccessGate";
 import { pct, price, usd } from "../format";
 import { Icon, Prov, Sheet } from "../ui";
 
@@ -19,6 +20,7 @@ export function OrderTicket({
   onPreview: (q: Quote | null) => void; onNeedFunds: () => void;
 }) {
   const s = useServices();
+  const access = useAccess();
   const marginChips = useMemo(
     () => ["0.10", "0.25", "0.50", "1.00"].map((x) => parseUnits(x, params.collateralDecimals)).filter((x) => x >= params.minMargin && x <= params.maxMargin),
     [params],
@@ -61,6 +63,7 @@ export function OrderTicket({
   const free = balances?.free ?? 0n;
   const blockers: string[] = [];
   if (!signedIn) blockers.push("Sign in to trade.");
+  else if (!access.canTrade) blockers.push("Join the live test (invite code + terms) to trade.");
   else if (free < margin) blockers.push(`You need ${usd(margin)} free. Fund your account first.`);
   if (state !== "OPEN") blockers.push(`Protocol is ${state.replace("_", " ")}: new positions are paused.`);
   if (!priceOk) blockers.push("Price checks are failing, so new positions are paused.");
@@ -135,7 +138,8 @@ export function OrderTicket({
       {blockers.length > 0 && (
         <div className="warn-box" style={{ marginTop: 12 }}>
           {blockers.map((b) => <div key={b}>{b}</div>)}
-          {signedIn && free < margin && <button className="btn small" style={{ marginTop: 8 }} onClick={onNeedFunds}>Fund account</button>}
+          {signedIn && !access.canTrade && <button className="btn small" style={{ marginTop: 8 }} onClick={access.openJoin}>Join with invite code</button>}
+          {signedIn && access.canTrade && free < margin && <button className="btn small" style={{ marginTop: 8 }} onClick={onNeedFunds}>Fund account</button>}
         </div>
       )}
 
