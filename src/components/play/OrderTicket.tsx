@@ -144,7 +144,7 @@ export function OrderTicket({
           {side ? `Review ${side.toLowerCase()}` : "Choose long or short"}
         </button>
       ) : (
-        <button className="btn primary block" style={{ marginTop: 14 }} onClick={() => s.wallet.login()}>Sign in to play</button>
+        <button className="btn primary block" style={{ marginTop: 14 }} onClick={() => s.wallet.login()}>Sign in to trade</button>
       )}
 
       {quote && <ReviewSheet open={reviewing} onClose={() => setReviewing(false)} quote={quote} params={params} />}

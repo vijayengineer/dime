@@ -54,28 +54,44 @@ function useVerifiedPrices() {
   return { items, error };
 }
 
-interface Sample { number: bigint; ts: number; txs: number; baseFee: bigint }
+interface Blk { number: bigint; hash: string; ts: number; txs: number; gasUsed: bigint; gasLimit: bigint; baseFee: bigint }
 
-function useChainStats() {
-  const [samples, setSamples] = useState<Sample[]>([]);
+const LANE = 28; // block tiles drawn
+const KEEP = 150; // blocks kept for rate stats (~1 min); timestamps are whole seconds, so short windows are noisy
+
+function useMonadBlocks() {
+  const [blocks, setBlocks] = useState<Blk[]>([]);
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    let alive = true, timer: ReturnType<typeof setTimeout>;
+    let alive = true, last = 0n, timer: ReturnType<typeof setTimeout>;
+    const toBlk = (b: Awaited<ReturnType<PublicClient["getBlock"]>>): Blk => ({
+      number: b.number!, hash: b.hash!, ts: Number(b.timestamp), txs: b.transactions.length,
+      gasUsed: b.gasUsed, gasLimit: b.gasLimit, baseFee: b.baseFeePerGas ?? 0n,
+    });
     async function tick() {
       try {
-        const b = await rpc().getBlock({ blockTag: "latest" });
-        const s: Sample = { number: b.number!, ts: Number(b.timestamp), txs: b.transactions.length, baseFee: b.baseFeePerGas ?? 0n };
-        if (alive) setSamples((prev) => (prev.at(-1)?.number === s.number ? prev : [...prev, s].slice(-90)));
-      } catch { /* the verified-price lane reports RPC errors */ }
-      if (alive) timer = setTimeout(tick, backoff());
+        const head = toBlk(await rpc().getBlock({ blockTag: "latest" }));
+        if (head.number > last) {
+          // Fill short gaps so the lane stays contiguous; after a long pause restart from head.
+          const from = last && head.number - last <= 6n ? last + 1n : head.number;
+          const gap = [];
+          for (let n = from; n < head.number; n++) gap.push(rpc().getBlock({ blockNumber: n }).then(toBlk));
+          const fresh = [...(await Promise.all(gap)), head];
+          if (!alive) return;
+          last = head.number;
+          setBlocks((prev) => {
+            const base = prev.length && fresh[0].number === prev[prev.length - 1].number + 1n ? prev : [];
+            return [...base, ...fresh].slice(-KEEP);
+          });
+          setError(null);
+        }
+      } catch (e) { if (alive) setError((e as Error).message.split("\n")[0]); }
+      if (alive) timer = setTimeout(tick, document.hidden ? 5000 : 450);
     }
     tick();
     return () => { alive = false; clearTimeout(timer); };
   }, []);
-  const head = samples.at(-1), first = samples[0];
-  const span = head && first ? head.ts - first.ts : 0;
-  const blockTime = head && first && span >= 5 ? span / Number(head.number - first.number) : null; // timestamps are whole seconds
-  const avgTxs = samples.length ? samples.reduce((a, s) => a + s.txs, 0) / samples.length : null;
-  return { head, blockTime, tps: blockTime && avgTxs != null ? avgTxs / blockTime : null };
+  return { blocks, error };
 }
 
 /** MON perp on Hyperliquid: size-weighted microprice of the top of book. */
@@ -131,8 +147,6 @@ function useDimeOnchain() {
 
 export function MonadChain() {
   const { items, error } = useVerifiedPrices();
-  const { head, blockTime, tps } = useChainStats();
-  const mon = useMonPrice();
   const dime = useDimeOnchain();
 
   const last = items.at(-1);
@@ -141,8 +155,6 @@ export function MonadChain() {
   const hi = prices.length ? prices.reduce((a, b) => (b > a ? b : a)) : 0n;
   const height = (p: bigint) => (hi === lo ? 55 : 12 + Number(((p - lo) * 8800n) / (hi - lo)) / 100);
   const passed = items.filter((v) => v.ok).length;
-  const gwei = head ? Number(head.baseFee) / 1e9 : null;
-  const transferUsd = head && mon ? (Number(head.baseFee) * 21000 / 1e18) * mon : null;
 
   return (
     <section className="card monad-card" aria-labelledby="chain-title">
@@ -184,14 +196,6 @@ export function MonadChain() {
         at Monad&apos;s latest block. A trade sends the same proof on-chain when it opens or closes.
       </p>
 
-      <div className="stat-row" style={{ marginTop: 12 }}>
-        <Stat label="Monad block" value={head ? `#${head.number.toLocaleString()}` : "…"} />
-        <Stat label="Block time" value={blockTime ? `${blockTime.toFixed(2)} s` : "…"} />
-        <Stat label="Throughput" value={tps != null ? `≈${tps.toFixed(0)} tx/s` : "…"} />
-        <Stat label="Base fee" value={gwei != null ? `${gwei.toFixed(0)} gwei` : "…"} />
-        <Stat label="MON" value={mon ? `$${mon.toFixed(mon < 1 ? 5 : 3)}` : "…"} hint="Hyperliquid perp" />
-        <Stat label="A transfer costs" value={transferUsd != null ? `$${transferUsd < 0.001 ? transferUsd.toFixed(6) : transferUsd.toFixed(4)}` : "…"} />
-      </div>
 
       <div className="chalk-rule" />
       <div className="card-title" style={{ marginBottom: 6 }}>
@@ -207,6 +211,49 @@ export function MonadChain() {
         <dt>Access</dt><dd>{dime ? (dime.allowlist ? "Founder allow-list (commissioning)" : "Open") : "…"}</dd>
         <dt>Rewards epoch</dt><dd>{dime ? dime.epoch.toString() : "…"}</dd>
       </dl>
+    </section>
+  );
+}
+
+/** Live Monad blocks: one bar per block, height = transactions; chain stats and the MON price above. */
+export function MonadBlocks() {
+  const { blocks, error } = useMonadBlocks();
+  const mon = useMonPrice();
+  const head = blocks.at(-1), first = blocks[0];
+  const span = head && first ? head.ts - first.ts : 0;
+  const nBlocks = head && first ? Number(head.number - first.number) : 0;
+  const blockTime = span >= 5 && nBlocks > 0 ? span / nBlocks : null;
+  const tps = span >= 5 ? blocks.slice(1).reduce((a, b) => a + b.txs, 0) / span : null;
+  const lane = blocks.slice(-LANE);
+  const maxTxs = Math.max(1, ...lane.map((b) => b.txs));
+  const gasPct = head ? Number((head.gasUsed * 10000n) / (head.gasLimit || 1n)) / 100 : null;
+  const gwei = head ? Number(head.baseFee) / 1e9 : null;
+  const transferUsd = head && mon ? (Number(head.baseFee) * 21000 / 1e18) * mon : null;
+
+  return (
+    <section className="card monad-card" aria-labelledby="blocks-title">
+      <div className="card-title">
+        <h2 id="blocks-title">Monad mainnet, live</h2>
+        <span className="tag" style={{ display: "inline-flex", gap: 6 }}><i className={`pulse ${error ? "off" : ""}`} aria-hidden />{error ? "RPC unreachable" : "streaming blocks"}</span>
+      </div>
+      <div className="stat-row">
+        <Stat label="Head block" value={head ? `#${head.number.toLocaleString()}` : "…"} />
+        <Stat label="Block time" value={blockTime ? `${blockTime.toFixed(2)} s` : "…"} hint={`averaged over ${nBlocks || "…"} blocks`} />
+        <Stat label="Throughput" value={tps != null ? `${tps.toFixed(1)} tx/s` : "…"} />
+        <Stat label="Base fee" value={gwei != null ? `${gwei.toFixed(0)} gwei` : "…"} hint={gasPct != null ? `last block ${gasPct.toFixed(1)}% full` : undefined} />
+        <Stat label="MON" value={mon ? `$${mon.toFixed(mon < 1 ? 5 : 3)}` : "…"} hint="Hyperliquid perp microprice" />
+        <Stat label="A transfer costs" value={transferUsd != null ? `$${transferUsd < 0.001 ? transferUsd.toFixed(6) : transferUsd.toFixed(4)}` : "…"} hint="21k gas × base fee × MON" />
+      </div>
+      <div className="block-lane" role="img" aria-label={head ? `Last ${lane.length} Monad blocks up to ${head.number}. Bar height is transaction count.` : "Loading Monad blocks"}>
+        {lane.map((b, i) => (
+          <div key={b.hash} className={`blk ${i === lane.length - 1 ? "head" : ""}`}
+            title={`#${b.number} · ${b.txs} txs · ${(Number((b.gasUsed * 1000n) / (b.gasLimit || 1n)) / 10).toFixed(1)}% gas · ${shortHash(b.hash)}`}>
+            <span className="fill" style={{ height: `${Math.max(4, (b.txs / maxTxs) * 100)}%` }} />
+            <span className="txs num">{b.txs}</span>
+          </div>
+        ))}
+      </div>
+      <div className="lane-axis note"><span>older</span><span>bar height = transactions per block</span><span>newest →</span></div>
     </section>
   );
 }
@@ -272,6 +319,7 @@ function Stat({ label, value, hint }: { label: string; value: string; hint?: str
     <div className="stat" title={hint}>
       <div className="label">{label}</div>
       <div className="value">{value}</div>
+      {hint && <div className="note" style={{ margin: "2px 0 0", fontSize: 11 }}>{hint}</div>}
     </div>
   );
 }

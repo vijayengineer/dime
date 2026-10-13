@@ -4,7 +4,7 @@ import { ago, pct, price, shortHash, time, usd } from "@/components/format";
 import { qualityTag } from "@/components/play/PriceHeader";
 import { FeedHealth } from "@/components/FeedHealth";
 import { PriceFlow } from "@/components/PriceFlow";
-import { EnvioIndexer, MonadChain } from "@/components/truth/MonadChain";
+import { EnvioIndexer, MonadBlocks, MonadChain } from "@/components/truth/MonadChain";
 import { FeedGate, Prov } from "@/components/ui";
 import type { ActivityItem } from "@/domain/types";
 import { useApp } from "@/state/app";
@@ -49,10 +49,10 @@ export default function TruthPage() {
         </FeedGate>
       </section>
 
+      <MonadBlocks />
+      <EnvioIndexer />
       <MonadChain />
 
-      <div className="grid-2">
-      <EnvioIndexer />
       <section className="card" aria-labelledby="hist-title">
         <div className="card-title"><h2 id="hist-title">Your history</h2><Prov p="INDEXED" demo={demo} /></div>
         <FeedGate feed={app.history} label="History">
@@ -61,7 +61,6 @@ export default function TruthPage() {
             : <ul className="list">{items.map((e) => <HistoryRow key={e.id} e={e} explorer={s.chain.explorer} />)}</ul>}
         </FeedGate>
       </section>
-      </div>
     </div>
   );
 }

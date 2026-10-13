@@ -12,7 +12,7 @@ export const brand = {
   rightsName: "DIME rights",
   rightsUnit: "rights",
   houseName: "The House",
-  tabs: { play: "Play", house: "The House", truth: "Truth" },
+  tabs: { play: "Trade", house: "The House", truth: "Truth" },
   orgLine: "by RNDM",
   chainLine: "Built on Monad",
 } as const;
