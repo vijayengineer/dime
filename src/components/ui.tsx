@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import type { Feed } from "@/adapters/types";
 import type { Provenance } from "@/domain/types";
 
@@ -55,10 +56,13 @@ export function Sheet({ open, onClose, labelledBy, children }: { open: boolean; 
     return () => { document.removeEventListener("keydown", onKey); prev?.focus(); };
   }, [open, onClose]);
   if (!open) return null;
-  return (
+  // Portal to <body>: a sheet opened from the sticky header would otherwise sit inside the header's
+  // stacking context, underneath the mobile tab bar.
+  return createPortal(
     <div className="sheet-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="sheet rise" role="dialog" aria-modal="true" aria-labelledby={labelledBy} ref={ref}>{children}</div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

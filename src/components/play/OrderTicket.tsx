@@ -197,7 +197,7 @@ function ReviewSheet({ open, onClose, quote, params }: { open: boolean; onClose:
         <dt>Worst accepted entry</dt><dd>{price(quote.priceLimit)}</dd>
         <dt>Liquidation near</dt><dd>{price(quote.liquidationPrice)}</dd>
         <dt>Fee</dt><dd>{pct(quote.feeBps, 0)} of positive P&amp;L</dd>
-        <dt>Execution</dt><dd style={{ fontFamily: "var(--font-body)" }}>{d.routes.houseFallback ? "Match, then house" : "Match only"} · {d.matchWindowMs / 1000}s</dd>
+        <dt>Execution</dt><dd style={{ fontFamily: "var(--font-body)" }}>{!d.routes.matched ? "House, instant" : `Match only · ${d.matchWindowMs / 1000}s`}</dd>
         <dt>Price tolerance</dt><dd>{pct(d.slippageBps, 2)}</dd>
         <dt>Request expires</dt><dd>{params.intentTtlMs / 1000}s after signing</dd>
       </dl>

@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { reasonText } from "@/domain/copy";
 import type { ProtocolParams } from "@/config/protocol";
-import { brand } from "@/config/brand";
 import { cappedGrossPnl, distanceToLiqBps, profitFee } from "@/domain/math";
 import { TERMINAL_INTENT, type IntentState, type Position, type PriceSnapshot, type Settlement } from "@/domain/types";
 import { useServices } from "@/state/services";
@@ -145,8 +144,8 @@ export function SettlementCard({ s, onDone }: { s: Settlement; onDone: () => voi
       {s.reason === "COUNTERPARTY" && <p className="note">Your counterparty closed, which settled your side at the same price.</p>}
       {s.rightsIssued > 0n && (
         <p className="warn-box" style={{ marginTop: 10 }}>
-          This house-trade loss issued <strong className="num">{fmtRights(s.rightsIssued)}</strong> pending {brand.rightsName}. They are not a refund,
-          can&apos;t be sold or redeemed for principal, activate next epoch, and may never earn anything.
+          This loss earned you <strong className="num">{fmtRights(s.rightsIssued)} DIME</strong>, staked automatically. It starts earning a share of
+          house earnings (in USDC) next epoch. Not a refund, and it may earn nothing.
         </p>
       )}
       <div className="sides" style={{ marginTop: 12 }}>

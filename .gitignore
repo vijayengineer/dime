@@ -26,3 +26,7 @@ id_*
 # OS / tool caches
 .DS_Store
 cache/
+
+# videos (teasers, demos) stay local
+*.mp4
+*.mov
