@@ -57,7 +57,7 @@ export function PriceFlow({ snap }: { snap: PriceSnapshot }) {
       const narrow = W < 560;
       return {
         narrow,
-        vx: narrow ? Math.max(86, W * 0.28) : Math.min(210, W * 0.2),
+        vx: narrow ? Math.max(104, W * 0.32) : Math.min(210, W * 0.2), // leave room for right-aligned venue labels
         ix: W * (narrow ? 0.6 : 0.5), iy: H / 2, ir: narrow ? 22 : 30,
         sx: W * (narrow ? 0.78 : 0.72), mx: W * (narrow ? 0.92 : 0.9),
       };
@@ -208,7 +208,7 @@ export function PriceFlow({ snap }: { snap: PriceSnapshot }) {
         const color = v.health === "down" ? BAD : v.health === "partial" ? WARN : CREAM;
         node(L.vx, v.y, 4 + v.weight * 14, color, 0, v.used ? 0.22 : 0.05);
         const lx = L.vx - (4 + v.weight * 14) - 10;
-        text(v.label, lx, v.y - 7, L.narrow ? 11 : 12, v.used ? "rgba(243,236,220,.92)" : "rgba(243,236,220,.4)", "right", 600);
+        text(v.label, lx, v.y - 7, L.narrow ? 10 : 12, v.used ? "rgba(243,236,220,.92)" : "rgba(243,236,220,.4)", "right", 600);
         text(L.narrow ? `${(v.weight * 100).toFixed(0)}%` : `${v.price} · ${(v.weight * 100).toFixed(1)}%`, lx, v.y + 8, 10, "rgba(205,198,182,.7)", "right");
       }
 

@@ -136,6 +136,9 @@ button { font: inherit; color: inherit; }
   .grid-play { grid-template-columns: minmax(0, 1fr) 380px; align-items: start; }
   .grid-play > section:first-child { position: sticky; top: 72px; }
 }
+/* Grid items default to min-width:auto, which lets a wide table push the page past the viewport on phones. */
+.stack > *, .card, .grid-2 > *, .grid-play > * { min-width: 0; }
+.table-scroll { max-width: 100%; }
 .grid-2 { display: grid; gap: 14px; }
 @media (min-width: 860px) { .grid-2 { grid-template-columns: 1fr 1fr; } }
 .stack { display: grid; gap: 14px; }
