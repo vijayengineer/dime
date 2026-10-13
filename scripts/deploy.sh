@@ -48,6 +48,7 @@ if [ "$CHAIN" != "31337" ] && [ -z "${DIME_SKIP_VERIFY:-}" ]; then
   forge verify-contract "$(jq -r .libraries.DimeMath $M)" contracts/src/lib/DimeMath.sol:DimeMath $V || true
   forge verify-contract "$(jq -r .libraries.DimeRights $M)" contracts/src/lib/DimeRights.sol:DimeRights $V || true
   forge verify-contract "$(jq -r .verifier $M)" contracts/src/oracle/OperatorPriceVerifier.sol:OperatorPriceVerifier $V || true
+  forge verify-contract "$(jq -r .dimeToken $M)" contracts/src/DimeToken.sol:DimeToken $V || true
   forge verify-contract "$(jq -r .protocol $M)" contracts/src/DimeProtocol.sol:DimeProtocol $V $LIBS || true
   if [ "$(jq -r .collateralIsTestToken $M)" = "true" ]; then forge verify-contract "$(jq -r .collateral $M)" contracts/src/test-tokens/TestUSDC.sol:TestUSDC $V || true; fi
 fi

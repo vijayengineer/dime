@@ -1,0 +1,42 @@
+{
+  "admin": "0x1607265A81A3E35Ab5058afBfA261534a72a062A",
+  "allowlistEnabled": true,
+  "chainId": 143,
+  "collateral": "0x754704Bc059F8C67012fEd69BC8A327a5aafb603",
+  "collateralDecimals": 6,
+  "collateralIsTestToken": false,
+  "collateralSymbol": "USDC",
+  "configVersion": 1,
+  "deploymentBlock": 113002354,
+  "dimeToken": "0xC64efbA1E151a0914509EC76CAe1b5A827Ce50C9",
+  "dimeTransfersEnabled": false,
+  "eip712Name": "DIME",
+  "eip712Version": "1",
+  "guardian": "0xDe82bC088214B4E6A943c98DdE912C97ebc93b75",
+  "independentOracle": false,
+  "oracleKind": "OPERATOR_SIGNED_COMMISSIONING",
+  "protocol": "0x2C3De859ccAa0bfcDeFAa21d348b17F2aA2b746E",
+  "relayer": "0xEc87Ce176647C3cAfd97CDcCf6b50ff0041F5962",
+  "reporter": "0xA4DA69d76584675a03e8C08350415cD75d07c593",
+  "stage": "commissioning",
+  "verifier": "0xC9Af6f42c6962CF327Eb0F5893EdC09F7067263c",
+  "deployTxs": {
+    "OperatorPriceVerifier": {
+      "address": "0xc9af6f42c6962cf327eb0f5893edc09f7067263c",
+      "txHash": "0x9198977784e777665bbd914c8765d8726ecb7cd75c737016320bcb4c4f262169"
+    },
+    "DimeToken": {
+      "address": "0xc64efba1e151a0914509ec76cae1b5a827ce50c9",
+      "txHash": "0xdf65545417ee9570a2741fb7352ad77ebb6afa6997e1d540780f51b07d0b8607"
+    },
+    "DimeProtocol": {
+      "address": "0x2c3de859ccaa0bfcdefaa21d348b17f2aa2b746e",
+      "txHash": "0x8c0669fd6006073e521aeffcff6a6b8609959286647132964e28308202c1561d"
+    }
+  },
+  "libraries": {
+    "DimeMath": "0x44e7c17d6fbbf9cd6b7714c9ad89cc6d55f7a0c5",
+    "DimeRights": "0x6ab1b49f68565dd87d60bde64b503f63ecea86a2"
+  },
+  "finalizedAt": "2026-10-13T09:14:53.252Z"
+}

@@ -1,5 +1,5 @@
 # DIME backend site for the server's existing Caddy (imported from Cathena's Caddyfile).
-# Only read-only feed paths are routed for the demo. /debug, /internal, /proof, /mock are never exposed.
+# Routes the read-only feed (8710) and the public API (8720). /debug, /internal, /proof, /mock are never exposed.
 api-dime.rndm.io {
 	encode zstd gzip
 	header {
@@ -12,13 +12,13 @@ api-dime.rndm.io {
 	handle @feed {
 		reverse_proxy 127.0.0.1:8710
 	}
-	# Phase 2 (testnet): uncomment to expose the API and its WebSocket stream.
-	# handle /v1/* {
-	# 	reverse_proxy 127.0.0.1:8720
-	# }
-	# handle /health {
-	# 	reverse_proxy 127.0.0.1:8720
-	# }
+	# API + WebSocket stream (/v1/stream). Admin/internal paths do not exist on the public API.
+	handle /v1/* {
+		reverse_proxy 127.0.0.1:8720
+	}
+	handle /health {
+		reverse_proxy 127.0.0.1:8720
+	}
 	handle {
 		respond "Not found" 404
 	}
