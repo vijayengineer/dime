@@ -9,6 +9,7 @@ User=dime
 Group=dime
 WorkingDirectory=/opt/dime/app/backend
 EnvironmentFile=/etc/dime/backend.env
+EnvironmentFile=-/etc/dime/envio.env
 ExecStart=/usr/local/bin/node --import tsx src/api/main.ts
 Restart=on-failure
 RestartSec=3

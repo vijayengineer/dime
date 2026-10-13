@@ -4,7 +4,7 @@ import { useSyncExternalStore } from "react";
 import { ago, pct, price, shortHash, time, usd } from "@/components/format";
 import { qualityTag } from "@/components/play/PriceHeader";
 import { FeedHealth } from "@/components/FeedHealth";
-import { MonadChain } from "@/components/truth/MonadChain";
+import { EnvioIndexer, MonadChain } from "@/components/truth/MonadChain";
 import { FeedGate, Prov } from "@/components/ui";
 import type { ActivityItem, ProtocolState } from "@/domain/types";
 import { useApp } from "@/state/app";
@@ -77,19 +77,7 @@ export default function TruthPage() {
               )}
             </FeedGate>
           </section>
-          <section className="card" aria-labelledby="idx-title">
-            <div className="card-title"><h2 id="idx-title">Indexer</h2><Prov p="INDEXED" demo={demo} /></div>
-            <FeedGate feed={app.indexer} label="Indexer status">
-              {(i) => (
-                <dl className="kv">
-                  <dt>Indexed block</dt><dd>{i.indexedBlock?.toString() ?? "—"}</dd>
-                  <dt>Block hash</dt><dd>{shortHash(i.indexedHash ?? undefined)}</dd>
-                  <dt>Chain head</dt><dd>{i.chainHead?.toString() ?? "—"}</dd>
-                  <dt>Lag</dt><dd>{i.lagBlocks ?? "—"} blocks · {i.lagMs != null ? ago(i.lagMs) : "—"}</dd>
-                </dl>
-              )}
-            </FeedGate>
-          </section>
+          <EnvioIndexer />
       </div>
 
       <section className="card" aria-labelledby="hist-title">

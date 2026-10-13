@@ -16,6 +16,7 @@ import { BTC_MARKET, makeChain, parseOrder, positionIdFor, PROTOCOL_STATES, reve
 import { Executor } from "../chain/executor";
 import { EventWatcher, type SettlementWire } from "../chain/events";
 import { Matcher } from "../matching/matcher";
+import { EnvioIndexer } from "../indexer/envio";
 import { autoExecution } from "../../../shared/execution";
 
 /* ================================================================ wiring */
@@ -121,6 +122,16 @@ watcher.start();
 setInterval(() => void relayer.reconcile(), 10_000);
 
 prices.on("snapshot", (s) => publish("price:BTC-USD", s));
+
+/* ---------------------------------------------------------------- envio (HyperRPC) */
+const envio = cfg.ENVIO_API_TOKEN
+  ? new EnvioIndexer(cfg.ENVIO_API_TOKEN, cfg.CHAIN_ID, {
+      DimeProtocol: cfg.manifest.protocol, PriceVerifier: cfg.manifest.verifier,
+      ...(cfg.manifest.dimeToken ? { DimeToken: cfg.manifest.dimeToken as Address } : {}),
+    }, BigInt(cfg.manifest.deploymentBlock), () => c.pub.getBlockNumber())
+  : null;
+envio?.start();
+if (!envio) log.warn("ENVIO_API_TOKEN not set: /v1/indexer disabled");
 
 /* ================================================================ http */
 const app = Fastify({ logger: false, bodyLimit: 16 * 1024 });
@@ -319,6 +330,8 @@ app.post("/v1/close", { preHandler: authenticate }, async (req, reply) => {
   store.saveIdem(`close:${key}`, body);
   return reply.code(200).header("content-type", "application/json").send(body);
 });
+
+app.get("/v1/indexer", async (_q, reply) => (envio ? json(reply, 200, envio.view()) : json(reply, 503, err("INDEXER_DISABLED", "Indexer not configured"))));
 
 /* ---------------------------------------------------------------- metrics */
 app.get("/v1/metrics", async (_q, reply) => {

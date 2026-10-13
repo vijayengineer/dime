@@ -64,7 +64,7 @@ function Footer() {
           <div className="footer-brand"><DimeMark size={22} /> <strong>{brand.name}</strong> <span className="muted">· {brand.expansion}</span></div>
           <p className="note" style={{ margin: "6px 0 0", maxWidth: 520 }}>
             {s.mode === "demo"
-              ? `${brand.name}: Paper. Live BTC prices; trades and balances are paper, not real money.`
+              ? `${brand.name}: Paper. Live BTC prices from Hyperliquid, Binance and other venues.`
               : "Leveraged trading can lose your full margin quickly. Rights are not a refund and may earn nothing."}
           </p>
         </div>

@@ -23,6 +23,7 @@ export const ManifestSchema = z.object({
   relayer: z.string(),
   guardian: z.string(),
   reporter: z.string(),
+  dimeToken: z.string().optional(),
 });
 export type Manifest = z.infer<typeof ManifestSchema> & { protocol: Address; verifier: Address; collateral: Address };
 
@@ -47,6 +48,7 @@ const Env = z.object({
   CORS_ORIGINS: z.string().default("http://localhost:3000"),
   AUTH_MODE: z.enum(["privy", "none"]).default("privy"),
   PRIVY_APP_ID: z.string().optional(),
+  ENVIO_API_TOKEN: z.string().optional(),
   MAX_QUEUE_PER_BUCKET: z.coerce.number().default(100),
   RATE_LIMIT_PER_MIN: z.coerce.number().default(60),
   KEEPER_INTERVAL_MS: z.coerce.number().default(1000),

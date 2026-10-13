@@ -47,8 +47,7 @@ export default function PlayPage() {
     {!position && !intentBusy && (
       <section className="hero-strip" aria-label="About">
         <div>
-          <h1>{s.mode === "demo" ? <>Paper trade BTC, <em>dime-sized.</em></> : <>Trade BTC, <em>dime-sized.</em></>}</h1>
-          <p>Go long or short on BTC against another trader or the house. Your margin is the most you can lose.</p>
+          <h1>Trade <em>anything.</em></h1>
         </div>
         {params && (
           <div className="hero-facts">
@@ -66,7 +65,6 @@ export default function PlayPage() {
         </FeedGate>
         <PriceChart points={app.series} lines={lines} ariaLabel={chartLabel} />
         <div className="chart-legend" aria-hidden={lines.length === 0}>
-          <span><i style={{ borderColor: "var(--chalk)", borderTopStyle: "solid" }} />Indicative price (estimate)</span>
           {position && <span><i style={{ borderColor: "var(--yellow)" }} />Your entry</span>}
           {(position || preview) && <span><i style={{ borderColor: "var(--bad)" }} />Liquidation{position ? "" : " (if opened now)"}</span>}
         </div>

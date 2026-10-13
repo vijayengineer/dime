@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { PriceSnapshot } from "@/domain/types";
 import { ago, pct, price } from "../format";
-import { Prov } from "../ui";
 import { LiveFeedChip } from "../FeedHealth";
 
 export function qualityTag(q: PriceSnapshot["quality"]) {
@@ -15,7 +14,7 @@ export function qualityTag(q: PriceSnapshot["quality"]) {
   return <span className={`tag ${cls}`} title={title}>{text}</span>;
 }
 
-export function PriceHeader({ snap, demo }: { snap: PriceSnapshot; demo: boolean }) {
+export function PriceHeader({ snap }: { snap: PriceSnapshot; demo?: boolean }) {
   // Brief up/down tint on each change; the number itself stays in text ink.
   const prev = useRef(snap.estimate);
   const [dir, setDir] = useState<"up" | "down" | null>(null);
@@ -33,7 +32,6 @@ export function PriceHeader({ snap, demo }: { snap: PriceSnapshot; demo: boolean
         <div className={`hero-num price-num ${dir ?? ""}`} aria-live="off">{price(snap.estimate)}</div>
       </div>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", paddingBottom: 6 }}>
-        <Prov p="ESTIMATE" demo={demo && !snap.liveMarketData} />
         <LiveFeedChip snap={snap} />
         {qualityTag(snap.quality)}
         <span className="tag" title="Age of freshest source">age {ago(snap.ageMs)}</span>
