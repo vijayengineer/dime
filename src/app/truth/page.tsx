@@ -4,7 +4,7 @@ import { ago, pct, price, shortHash, time, usd } from "@/components/format";
 import { qualityTag } from "@/components/play/PriceHeader";
 import { FeedHealth } from "@/components/FeedHealth";
 import { PriceFlow } from "@/components/PriceFlow";
-import { EnvioIndexer, MonadBlocks, MonadChain } from "@/components/truth/MonadChain";
+import { EnvioIndexer, MonadBlocks, VerifiedStream } from "@/components/truth/MonadChain";
 import { FeedGate, Prov } from "@/components/ui";
 import type { ActivityItem } from "@/domain/types";
 import { useApp } from "@/state/app";
@@ -32,6 +32,7 @@ export default function TruthPage() {
           {(p) => (
             <>
               <PriceFlow snap={p} />
+              <VerifiedStream />
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap", margin: "14px 0 10px" }}>
                 {qualityTag(p.quality)}
                 <span className="tag">max age {ago(p.ageMs)}</span>
@@ -49,9 +50,8 @@ export default function TruthPage() {
         </FeedGate>
       </section>
 
-      <MonadBlocks />
       <EnvioIndexer />
-      <MonadChain />
+      <MonadBlocks />
 
       <section className="card" aria-labelledby="hist-title">
         <div className="card-title"><h2 id="hist-title">Your history</h2><Prov p="INDEXED" demo={demo} /></div>
