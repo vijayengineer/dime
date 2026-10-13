@@ -54,6 +54,7 @@ function LiveRoot({ children }: { children: ReactNode }) {
       appId={env.privyAppId}
       config={{
         loginMethods: ["email", "google", "wallet"],
+        appearance: { theme: "dark", accentColor: "#6e54ff", landingHeader: "Sign in to DIME" },
         embeddedWallets: { ethereum: { createOnLogin: "users-without-wallets" } },
         defaultChain: chain,
         supportedChains: [chain],
