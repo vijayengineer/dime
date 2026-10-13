@@ -92,7 +92,19 @@ export class Store {
         opened_block INTEGER NOT NULL, open_tx TEXT NOT NULL, settled INTEGER NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS positions_open ON positions(settled);
+      CREATE TABLE IF NOT EXISTS terms (
+        address TEXT NOT NULL, version TEXT NOT NULL, signature TEXT NOT NULL, accepted_at INTEGER NOT NULL,
+        PRIMARY KEY (address, version)
+      );
     `);
+  }
+
+  /* terms of use: one signed acceptance per wallet and version */
+  acceptTerms(address: string, version: string, signature: string) {
+    this.db.prepare("INSERT OR IGNORE INTO terms VALUES (?, ?, ?, ?)").run(address.toLowerCase(), version, signature, Date.now());
+  }
+  hasAcceptedTerms(address: string, version: string) {
+    return !!this.db.prepare("SELECT 1 FROM terms WHERE address = ? AND version = ?").get(address.toLowerCase(), version);
   }
 
   /* intents */

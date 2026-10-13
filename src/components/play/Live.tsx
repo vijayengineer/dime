@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
 import { reasonText } from "@/domain/copy";
 import type { ProtocolParams } from "@/config/protocol";
 import { brand } from "@/config/brand";
@@ -174,7 +173,6 @@ export function SettlementCard({ s, onDone }: { s: Settlement; onDone: () => voi
         </p>
       )}
       <div className="sides" style={{ marginTop: 12 }}>
-        <Link className="btn" href="/truth">See it in Truth</Link>
         <button className="btn" onClick={onDone}>Done</button>
       </div>
       {svc.mode === "demo" && <p className="note" style={{ marginBottom: 0 }}>Demo settlement: computed by the local engine, not a contract.</p>}

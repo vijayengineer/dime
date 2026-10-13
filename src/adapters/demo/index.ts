@@ -46,6 +46,8 @@ export function createDemoServices(): Services {
       subscribeIndexer: (cb) => e.indexerFeed.subscribe(cb),
     },
     tx: { subscribe: (cb) => { cb([]); return e.txs.subscribe(cb); } },
+    // Paper mode moves no real money, so there is nothing to accept.
+    terms: { accepted: async () => true, accept: async () => {} },
     demo: {
       get scenario() { return e.scenario; },
       subscribe: (cb) => { cb(e.scenario); return e.scenarioChanged.subscribe(cb); },

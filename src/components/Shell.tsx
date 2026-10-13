@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { TERMS_VERSION } from "@shared/terms";
 import { brand } from "@/config/brand";
 import { parseUnits } from "@/domain/fixed";
 import { AppStateProvider, useApp } from "@/state/app";
@@ -23,6 +24,7 @@ export function Shell({ children }: { children: ReactNode }) {
         <Footer />
         <StatusRail />
         <TabBar />
+        <TermsGate />
       </AppStateProvider>
     </ServicesProvider>
   );
@@ -65,9 +67,10 @@ function Footer() {
           <p className="note" style={{ margin: "6px 0 0", maxWidth: 520 }}>
             {s.mode === "demo"
               ? `${brand.name}: Paper. Live BTC prices from Hyperliquid, Binance and other venues.`
-              : "Leveraged trading can lose your full margin quickly. Rights are not a refund and may earn nothing."}
+              : "DIME is a hackathon project trading real USDC on Monad mainnet. Leveraged trading can lose your full margin in seconds."}
           </p>
         </div>
+        <Link className="footer-terms" href="/terms">Terms of Use</Link>
         <a className="footer-monad" href="https://monad.xyz" target="_blank" rel="noreferrer">
           <span className="muted" style={{ fontSize: 12 }}>{brand.chainLine}</span>
           <MonadLockup height={20} />
@@ -87,6 +90,62 @@ function TabBar() {
         </Link>
       ))}
     </nav>
+  );
+}
+
+/** Live mode: a signed-in wallet must sign the current Terms of Use before using the app. The API enforces it for trades. */
+function TermsGate() {
+  const s = useServices();
+  const { account } = useApp();
+  const acct = feedValue(account);
+  const address = acct?.address;
+  const [state, setState] = useState<"checking" | "needed" | "ok">("checking");
+  const [ticks, setTicks] = useState({ eligible: false, risk: false });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (s.mode !== "live" || !address) return;
+    let alive = true;
+    setState("checking");
+    s.terms.accepted(address).then((a) => { if (alive) setState(a ? "ok" : "needed"); }).catch(() => { if (alive) setState("needed"); });
+    return () => { alive = false; };
+  }, [s, address]);
+
+  if (s.mode !== "live" || !address || state !== "needed") return null;
+
+  async function accept() {
+    setErr(null);
+    setBusy(true);
+    try { await s.terms.accept(address!); setState("ok"); }
+    catch (e) { setErr((e as Error).message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <Sheet open onClose={() => {}} labelledBy="terms-title">
+      <h2 id="terms-title">Before you trade</h2>
+      <ul className="terms-points">
+        <li><strong>This is real money.</strong> You trade with USDC on Monad mainnet. Transactions are final.</li>
+        <li><strong>This is a hackathon project.</strong> Experimental, unaudited software that may have bugs or stop working.</li>
+        <li><strong>You can lose everything you deposit.</strong> At up to 1000× leverage, a tiny price move can liquidate you in seconds.</li>
+        <li><strong>Prices are signed by DIME.</strong> The contract checks our signature, not whether the price is fair.</li>
+      </ul>
+      <label className="terms-check">
+        <input type="checkbox" checked={ticks.eligible} onChange={(e) => setTicks({ ...ticks, eligible: e.target.checked })} />
+        <span>I am 18 or older and not a resident of, or located in, a restricted jurisdiction (including the United States).</span>
+      </label>
+      <label className="terms-check">
+        <input type="checkbox" checked={ticks.risk} onChange={(e) => setTicks({ ...ticks, risk: e.target.checked })} />
+        <span>I have read the <Link href="/terms" target="_blank">Terms of Use</Link> and accept that I am using real money in a hackathon project at my own risk.</span>
+      </label>
+      {err && <p className="err-box" role="alert">{err}</p>}
+      <button className="btn primary block" style={{ marginTop: 12 }} disabled={busy || !ticks.eligible || !ticks.risk} onClick={accept}>
+        {busy ? "Waiting for your wallet…" : "Accept and sign"}
+      </button>
+      <p className="note">Signing is free: it does not send a transaction. Version {TERMS_VERSION}.</p>
+      <button className="btn ghost small" onClick={() => s.wallet.logout()}>Sign out instead</button>
+    </Sheet>
   );
 }
 
@@ -150,11 +209,8 @@ export function AccountSheet({ open, onClose }: { open: boolean; onClose: () => 
                 <label htmlFor="amt">Amount (USDC)</label>
                 <input id="amt" className="input" inputMode="decimal" value={amt} onChange={(e) => setAmt(e.target.value)} />
               </div>
-              {b.allowlisted === false && (
-                <p className="warn-box">Deposits are open to allow-listed wallets only during commissioning. This wallet isn&apos;t on the list yet. Withdrawals always work.</p>
-              )}
               <div className="sides" style={{ marginTop: 12 }}>
-                <button className="btn primary" disabled={busy || room <= 0n || b.allowlisted === false} onClick={() => run("deposit")}>Deposit</button>
+                <button className="btn primary" disabled={busy || room <= 0n} onClick={() => run("deposit")}>Deposit</button>
                 <button className="btn" disabled={busy || b.free === 0n} onClick={() => run("withdraw")}>Withdraw</button>
               </div>
               {room <= 0n && <p className="note">You have reached the deposit cap.</p>}

@@ -16,6 +16,7 @@ import { Emitter, FeedHub } from "../feed";
 import { decodePriceWire } from "../priceWire";
 import { ServiceError, type Services } from "../types";
 import { chalkAbi, dimeTokenAbi, erc20Abi } from "./abi";
+import { termsMessage } from "@shared/terms";
 import type { LiveEnv } from "./env";
 
 export interface WalletBridge {
@@ -204,18 +205,16 @@ export function createLiveServices(env: LiveEnv, wallet: WalletBridge): Services
           const a = me();
           if (!a) return;
           try {
-            const [free, locked, deposited, walletBal, block, gated, listed] = await Promise.all([
+            const [free, locked, deposited, walletBal, block] = await Promise.all([
               pub.readContract({ ...vault, functionName: "freeBalance", args: [a.address] }),
               pub.readContract({ ...vault, functionName: "lockedCollateral", args: [a.address] }),
               pub.readContract({ ...vault, functionName: "depositedTotal", args: [a.address] }),
               pub.readContract({ address: env.usdc, abi: erc20Abi, functionName: "balanceOf", args: [a.address] }),
               pub.getBlockNumber(),
-              pub.readContract({ ...vault, functionName: "allowlistEnabled" }),
-              pub.readContract({ ...vault, functionName: "allowlisted", args: [a.address] }),
             ]);
             hub.ok({
               free, positionCollateral: locked, pendingCollateral: 0n, wallet: walletBal, depositedTotal: deposited,
-              fundingCap: params?.fundingCapPerWallet ?? 0n, allowlisted: !gated || listed, provenance: "CONFIRMED", block,
+              fundingCap: params?.fundingCapPerWallet ?? 0n, provenance: "CONFIRMED", block,
             });
           } catch (e) { hub.error(`balance read failed: ${(e as Error).message}`); }
         }, 2000);
@@ -501,6 +500,18 @@ export function createLiveServices(env: LiveEnv, wallet: WalletBridge): Services
     },
 
     tx: { subscribe: (cb) => { cb(txList); return txEmitter.subscribe(cb); } },
+
+    terms: {
+      async accepted(address) {
+        const r = await api<{ accepted: boolean }>(`/v1/terms/${address}`);
+        return r.accepted;
+      },
+      async accept(address) {
+        const w = await wallet.getWalletClient();
+        const signature = await w.signMessage({ account: address, message: termsMessage(address) });
+        await api("/v1/terms", { method: "POST", body: JSON.stringify({ address, signature }) });
+      },
+    },
   };
   return services;
 }

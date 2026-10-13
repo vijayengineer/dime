@@ -1,6 +1,6 @@
 import type { ProtocolParams } from "@/config/protocol";
 import type {
-  Account, ActivityItem, Balances, HouseSnapshot, IndexerStatus, IntentState, OrderDraft, Position,
+  Address, Account, ActivityItem, Balances, HouseSnapshot, IndexerStatus, IntentState, OrderDraft, Position,
   PricePoint, PriceSnapshot, Quote, RightsSnapshot, Settlement, TxProgress,
 } from "@/domain/types";
 
@@ -92,6 +92,12 @@ export interface TxAdapter {
   subscribe(cb: Listener<TxProgress[]>): Unsubscribe;
 }
 
+/** Terms of Use acceptance for the signed-in wallet (signed message, recorded by the API). */
+export interface TermsAdapter {
+  accepted(address: Address): Promise<boolean>;
+  accept(address: Address): Promise<void>;
+}
+
 /** Demo-only controls. Absent in live mode. */
 export interface DemoControls {
   scenario: DemoScenario;
@@ -129,5 +135,6 @@ export interface Services {
   rights: RightsAdapter;
   history: HistoryAdapter;
   tx: TxAdapter;
+  terms: TermsAdapter;
   demo?: DemoControls;
 }

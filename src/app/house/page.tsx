@@ -229,26 +229,7 @@ function Distribution() {
         <dt>Waiting to be claimed</dt><dd>{house ? usd(house.fundedUnclaimed, 4) : "—"}</dd>
       </dl>
       <p className="note">The keeper closes each epoch on-chain: it funds stakers from new house earnings, then activates new stake.</p>
-      {s.mode === "demo" && (
-        <div className="chips" style={{ marginTop: 6 }}>
-          <DemoLossButton />
-          <button className="btn ghost small" onClick={() => s.demo?.fixtureHouseResult(-500_000n)}>Demo: a fixture wallet loses $0.50</button>
-          <button className="btn ghost small" onClick={() => s.demo?.advanceEpoch()}>Demo: close epoch</button>
-        </div>
-      )}
     </section>
   );
 }
 
-function DemoLossButton() {
-  const s = useServices();
-  const [err, setErr] = useState<string | null>(null);
-  return (
-    <>
-      <button className="btn ghost small" onClick={() => { try { setErr(null); s.demo?.demoUserHouseLoss(1_000_000n); } catch (e) { setErr((e as Error).message); } }}>
-        Demo: I lose $1 to the house
-      </button>
-      {err && <span className="note down">{err}</span>}
-    </>
-  );
-}

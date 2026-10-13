@@ -18,6 +18,7 @@ import { EventWatcher, type SettlementWire } from "../chain/events";
 import { Matcher } from "../matching/matcher";
 import { EnvioIndexer } from "../indexer/envio";
 import { autoExecution } from "../../../shared/execution";
+import { TERMS_VERSION, termsMessage } from "../../../shared/terms";
 
 /* ================================================================ wiring */
 const cfg = loadConfig();
@@ -259,6 +260,7 @@ app.post("/v1/intents", { preHandler: authenticate }, async (req, reply) => {
   const sig = b.data.signature as Hex;
   if (m.market.toLowerCase() !== BTC_MARKET.toLowerCase()) return json(reply, 400, err("BAD_MARKET", "BTC-USD only"));
   if (!(await verifyOrder(c, m, sig))) return json(reply, 401, err("BAD_SIGNATURE", "Signature does not match the request"));
+  if (!store.hasAcceptedTerms(m.user, TERMS_VERSION)) return json(reply, 403, err("TERMS_REQUIRED", "Accept the Terms of Use before trading"));
   if (!chainState) return json(reply, 503, err("UNAVAILABLE", "Chain state unavailable"));
   if (chainState.state !== "OPEN") return json(reply, 409, err("STATE", `Protocol is ${chainState.state}`));
   if (m.configVersion !== chainState.config.version) return json(reply, 409, err("CONFIG_CHANGED", "Configuration changed — review again"));
@@ -330,6 +332,24 @@ app.post("/v1/close", { preHandler: authenticate }, async (req, reply) => {
   const body = toWire({ txHash: res.hash, status: res.status, block: res.block });
   store.saveIdem(`close:${key}`, body);
   return reply.code(200).header("content-type", "application/json").send(body);
+});
+
+/* ---------------------------------------------------------------- terms of use */
+app.get("/v1/terms/:address", async (req, reply) => {
+  const { address } = req.params as { address: string };
+  if (!/^0x[0-9a-fA-F]{40}$/.test(address)) return json(reply, 400, err("BAD_ADDRESS", "Expected a 0x address"));
+  return json(reply, 200, { version: TERMS_VERSION, accepted: store.hasAcceptedTerms(address, TERMS_VERSION) });
+});
+app.post("/v1/terms", async (req, reply) => {
+  const b = req.body as { address?: string; signature?: string } | undefined;
+  if (!b?.address || !/^0x[0-9a-fA-F]{40}$/.test(b.address) || !b.signature || !/^0x[0-9a-fA-F]+$/.test(b.signature)) {
+    return json(reply, 400, err("BAD_REQUEST", "address and signature required"));
+  }
+  // The wallet must sign the exact current terms text (EOA or smart wallet via the public client).
+  const ok = await c.pub.verifyMessage({ address: b.address as Address, message: termsMessage(b.address), signature: b.signature as Hex }).catch(() => false);
+  if (!ok) return json(reply, 401, err("BAD_SIGNATURE", "Signature does not match the current terms"));
+  store.acceptTerms(b.address, TERMS_VERSION, b.signature);
+  return json(reply, 200, { version: TERMS_VERSION, accepted: true });
 });
 
 app.get("/v1/indexer", async (_q, reply) => (envio ? json(reply, 200, envio.view()) : json(reply, 503, err("INDEXER_DISABLED", "Indexer not configured"))));
