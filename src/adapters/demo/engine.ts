@@ -296,7 +296,7 @@ export class DemoEngine {
         const snap = decodePriceWire(m.data as Record<string, never>);
         this.external = snap;
         this.feedAt = Date.now();
-        if (snap.quality === "OK") {
+        if (snap.quality === "OK" || snap.quality === "DEGRADED") {
           this.price = snap.estimate;
           this.reference = { price: snap.estimate, ts: this.feedAt };
           const t = Math.floor(this.feedAt / 1000) * 1000;
@@ -447,7 +447,8 @@ export class DemoEngine {
       this.releaseIntentCollateral();
       return this.intent!;
     }
-    if (this.snapshot().quality !== "OK") {
+    const q = this.snapshot().quality;
+    if (q !== "OK" && q !== "DEGRADED") {
       this.setIntent("REJECTED", { reason: "Price check failed (stale or conflicting sources)" });
       this.releaseIntentCollateral();
       return this.intent!;

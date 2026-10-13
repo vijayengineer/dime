@@ -77,7 +77,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (price.status !== "ok") return;
     const p = price.value;
-    if (p.quality !== "OK") return; // never chart stale / conflicting / placeholder estimates
+    if (p.quality !== "OK" && p.quality !== "DEGRADED") return; // never chart stale / conflicting / placeholder estimates
     setSeries((prev) => {
       const t = p.sources.length ? Math.max(...p.sources.map((x) => x.ts)) : p.receivedAt;
       if (prev.length && prev[prev.length - 1].t >= t) return prev;

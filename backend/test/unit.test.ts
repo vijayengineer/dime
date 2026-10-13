@@ -232,3 +232,31 @@ describe("matcher house fallback vs chain clock", () => {
     expect(calls).toBe(2);
   });
 });
+
+describe("degraded fallback (Hyperliquid only)", () => {
+  const tk = (id: string, quote: "USD" | "USDT" | "USDC_PERP", px: string, at: number) =>
+    ({ id, name: id, quote, price: P(px), bid: P(px) - 100n, ask: P(px) + 100n, bidSize: P("1"), askSize: P("1"), ts: at, recvAt: at, seq: at });
+
+  it("uses Hyperliquid alone, basis-adjusted and flagged, when other venues go stale", () => {
+    const a = new Aggregator({ maxAgeMs: 2000, maxDisagreementBps: 15, minSources: 2 });
+    a.update(tk("coinbase", "USD", "100000", 1000));
+    a.update(tk("hyperliquid", "USDC_PERP", "100050", 1000));
+    expect(a.compute(1000)!.quality).toBe("OK"); // basis learned: perp −50
+    a.update(tk("hyperliquid", "USDC_PERP", "100150", 4000)); // coinbase now stale
+    const e = a.compute(4000)!;
+    expect(e.quality).toBe("DEGRADED");
+    expect(e.used).toEqual(["hyperliquid"]);
+    expect(e.estimate).toBe(P("100100")); // 100150 − 50 basis
+  });
+
+  it("is INSUFFICIENT (not degraded) if Hyperliquid is stale too, or the fallback is disabled", () => {
+    const a = new Aggregator({ maxAgeMs: 2000, maxDisagreementBps: 15, minSources: 2 });
+    a.update(tk("binance", "USDT", "100000", 1000));
+    a.update(tk("okx", "USDT", "100001", 1000));
+    a.update(tk("binance", "USDT", "100000", 5000));
+    expect(a.compute(5000)!.quality).toBe("INSUFFICIENT");
+    const b = new Aggregator({ maxAgeMs: 2000, maxDisagreementBps: 15, minSources: 2, degradedFallback: null });
+    b.update(tk("hyperliquid", "USDC_PERP", "100000", 1000));
+    expect(b.compute(1000)!.quality).toBe("INSUFFICIENT");
+  });
+});

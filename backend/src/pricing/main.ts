@@ -1,4 +1,6 @@
+import fs from "node:fs";
 import http from "node:http";
+import path from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import { encodeAbiParameters, keccak256, toHex, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -72,7 +74,7 @@ function publish() {
   const e = agg.compute(now);
   if (!e) return;
   latestEstimate = e;
-  if (e.quality === "OK") lastOkAt = now;
+  if (e.quality === "OK" || e.quality === "DEGRADED") lastOkAt = now;
   const proof = latestProof;
   const health = new Map(healthViews(now).map((h) => [h.id, h]));
   const ticks = new Map(agg.sources().map((s) => [s.id, s]));
@@ -106,7 +108,7 @@ function publish() {
     publishedAt: now,
   };
   latestSnapshot = snap;
-  if (e.quality === "OK") {
+  if (e.quality === "OK" || e.quality === "DEGRADED") {
     const sec = Math.floor(now / 1000) * 1000;
     if (!history.length || history[history.length - 1].t < sec) { history.push({ t: sec, price: snap.estimate }); if (history.length > 3600) history.shift(); }
   }
@@ -145,7 +147,7 @@ let outageStart: number | null = null;
 async function signReference() {
   if (!reporter) return;
   const e = agg.compute(Date.now());
-  if (!e || e.quality !== "OK") { counters.inc("proof.skippedQuality"); return; }
+  if (!e || (e.quality !== "OK" && e.quality !== "DEGRADED")) { counters.inc("proof.skippedQuality"); return; }
   const t0 = performance.now();
   const tsMs = Date.now();
   const inner = keccak256(encodeAbiParameters(
@@ -155,9 +157,39 @@ async function signReference() {
   const sig = await reporter.signMessage({ message: { raw: inner } });
   const payload = encodeAbiParameters([{ type: "uint256" }, { type: "uint64" }, { type: "bytes" }], [e.estimate, BigInt(tsMs), sig]);
   latestProof = { price: e.estimate.toString(), tsMs, payload, signer: reporter.address };
+  audit({
+    tsMs, price: e.estimate.toString(), quality: e.quality, signer: reporter.address, sig,
+    plainMedian: e.plainMedian.toString(), disagreementBps: e.disagreementBps,
+    basis: Object.fromEntries(Object.entries(e.basis).map(([k, v]) => [k, v!.toString()])),
+    inputs: agg.sources().map((t) => ({ id: t.id, quote: t.quote, bid: t.bid?.toString(), ask: t.ask?.toString(), bidSize: t.bidSize?.toString(), askSize: t.askSize?.toString(), ts: t.ts, seq: t.seq })),
+    weights: Object.fromEntries(e.venues.map((v) => [v.id, Math.round(v.weight * 10_000) / 10_000])),
+  });
   signLatency.record(performance.now() - t0);
   counters.inc("proof.signed");
 }
+
+/* ------------------------------------------------------------------ audit log */
+// Every signed reference price with the exact venue inputs that produced it, so anyone can
+// recompute it from public exchange data. Daily JSONL files, kept AUDIT_RETAIN_DAYS (default 7).
+const AUDIT_DIR = path.resolve(process.env.AUDIT_DIR ?? "./data/audit");
+const AUDIT_RETAIN_DAYS = Number(process.env.AUDIT_RETAIN_DAYS ?? 7);
+fs.mkdirSync(AUDIT_DIR, { recursive: true });
+const auditRecent: unknown[] = [];
+const dayFile = (ms: number) => path.join(AUDIT_DIR, `${new Date(ms).toISOString().slice(0, 10)}.jsonl`);
+function audit(rec: { tsMs: number } & Record<string, unknown>) {
+  auditRecent.push(rec);
+  if (auditRecent.length > 500) auditRecent.shift();
+  fs.appendFile(dayFile(rec.tsMs), JSON.stringify(rec) + "\n", (err) => { if (err) counters.inc("audit.writeError"); });
+}
+function pruneAudit() {
+  const cutoff = Date.now() - AUDIT_RETAIN_DAYS * 86_400_000;
+  for (const f of fs.readdirSync(AUDIT_DIR)) {
+    const m = f.match(/^(\d{4}-\d{2}-\d{2})\.jsonl$/);
+    if (m && Date.parse(m[1]) < cutoff) fs.rmSync(path.join(AUDIT_DIR, f), { force: true });
+  }
+}
+pruneAudit();
+setInterval(pruneAudit, 3_600_000);
 
 /* ------------------------------------------------------------------ sources */
 const ids = cfg.PRICE_SOURCES.split(",").map((x) => x.trim()).filter(Boolean);
@@ -200,6 +232,18 @@ const server = http.createServer((req, res) => {
       counters: counters.toJSON(),
       note: "venueTsToRecv includes exchange clock skew and network; internal is process time only",
     });
+  }
+  if (url.pathname === "/feed/audit") {
+    // Latest signed prices with their inputs (newest last). Full days: /feed/audit/YYYY-MM-DD
+    const limit = Math.min(500, Number(url.searchParams.get("limit") ?? 50));
+    return json(200, { note: "Operator-signed reference prices with venue inputs. Auditable, not an independent oracle.", signer: reporter?.address ?? null, records: auditRecent.slice(-limit) });
+  }
+  const day = url.pathname.match(/^\/feed\/audit\/(\d{4}-\d{2}-\d{2})$/);
+  if (day) {
+    const f = path.join(AUDIT_DIR, `${day[1]}.jsonl`);
+    if (!fs.existsSync(f)) return json(404, { error: "no audit file for that day" });
+    res.writeHead(200, { "content-type": "application/x-ndjson", ...cors });
+    return void fs.createReadStream(f).pipe(res);
   }
   if (url.pathname === "/feed/history") {
     const limit = Math.min(3600, Number(url.searchParams.get("limit") ?? 600));

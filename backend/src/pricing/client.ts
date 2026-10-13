@@ -47,7 +47,7 @@ export class PriceClient extends EventEmitter {
 
   /** Latest proof if younger than maxAgeMs and price quality is OK. */
   freshProof(maxAgeMs: number): ProofWire | null {
-    if (!this.proof || this.snapshot?.quality !== "OK") return null;
+    if (!this.proof || (this.snapshot?.quality !== "OK" && this.snapshot?.quality !== "DEGRADED")) return null;
     return Date.now() - this.proof.tsMs <= maxAgeMs ? this.proof : null;
   }
 

@@ -72,7 +72,9 @@ export interface PriceSource {
   health?: SourceHealth | null;
 }
 
-export type PriceQuality = "OK" | "STALE" | "CONFLICT" | "INSUFFICIENT";
+/** DEGRADED = too few fresh venues; price is Hyperliquid alone (still usable, clearly flagged). */
+export type PriceQuality = "OK" | "DEGRADED" | "STALE" | "CONFLICT" | "INSUFFICIENT";
+export const priceUsable = (q: PriceQuality | undefined) => q === "OK" || q === "DEGRADED";
 
 export interface PriceSnapshot {
   market: Market;

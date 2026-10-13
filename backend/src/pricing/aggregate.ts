@@ -30,7 +30,8 @@ export interface SourceTick {
   seq: number;
 }
 
-export type Quality = "OK" | "STALE" | "CONFLICT" | "INSUFFICIENT";
+/** DEGRADED = too few fresh venues; the estimate is Hyperliquid alone (basis-adjusted, flagged). */
+export type Quality = "OK" | "DEGRADED" | "STALE" | "CONFLICT" | "INSUFFICIENT";
 
 export interface VenueView {
   id: string;
@@ -62,6 +63,8 @@ export interface AggregateParams {
   minSources: number;
   maxWeightShare?: number; // default 0.4
   anchor?: Quote; // default USD, falling back to the first fresh group
+  /** Venue used alone when fewer than minSources are fresh (default "hyperliquid"); null disables. */
+  degradedFallback?: string | null;
 }
 
 const BPS = 10_000n;
@@ -140,7 +143,12 @@ export class Aggregator {
     const fresh = all.filter((s) => now - s.recvAt <= this.p.maxAgeMs);
     const groups = new Map<Quote, bigint[]>();
     for (const s of fresh) groups.set(s.quote, [...(groups.get(s.quote) ?? []), microprice(s)]);
-    const anchor: Quote | undefined = groups.has(this.p.anchor ?? "USD") ? (this.p.anchor ?? "USD") : [...groups.keys()][0];
+    // Anchor = configured group (USD). If it's not fresh, KEEP the last measured bases rather than
+    // re-anchoring (re-anchoring would zero another group's basis and jump the estimate). Only at
+    // startup, before any basis exists, does the first fresh group stand in as the anchor.
+    const want: Quote = this.p.anchor ?? "USD";
+    const anchor: Quote | undefined = groups.has(want) ? want
+      : Object.keys(this.basis).length === 0 ? [...groups.keys()][0] : undefined;
     if (anchor) {
       const ref = median(groups.get(anchor)!);
       this.basis[anchor] = 0n;
@@ -167,6 +175,16 @@ export class Aggregator {
     const ageMs = Math.max(0, now - newest);
     const plainMedian = usable.length ? median(usable.map((v) => v.mid + (this.basis[v.quote] ?? 0n))) : median(all.map((s) => s.price));
     if (usable.length < this.p.minSources) {
+      // Degraded mode: a single fresh, basis-aligned fallback venue (Hyperliquid by default).
+      const fb = this.p.degradedFallback === undefined ? "hyperliquid" : this.p.degradedFallback;
+      const v = fb ? usable.find((u) => u.id === fb) : undefined;
+      if (v) {
+        v.weight = 1;
+        return {
+          estimate: v.adjusted, plainMedian, divergenceBps: 0, quality: "DEGRADED", used: [v.id],
+          disagreementBps: 0, ageMs, basis: { ...this.basis }, venues,
+        };
+      }
       return {
         estimate: plainMedian, plainMedian, divergenceBps: 0, quality: fresh.length ? "INSUFFICIENT" : "STALE",
         used: [], disagreementBps: 0, ageMs, basis: { ...this.basis }, venues,

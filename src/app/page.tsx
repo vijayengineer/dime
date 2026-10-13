@@ -8,7 +8,7 @@ import { IntentCard, PositionCard, SettlementCard } from "@/components/play/Live
 import { OrderTicket } from "@/components/play/OrderTicket";
 import { price as fmtPrice, usd as fmtUsd } from "@/components/format";
 import { FeedGate } from "@/components/ui";
-import { TERMINAL_INTENT, type Quote } from "@/domain/types";
+import { priceUsable, TERMINAL_INTENT, type Quote } from "@/domain/types";
 import { useApp } from "@/state/app";
 import { feedValue, useServices } from "@/state/services";
 
@@ -83,7 +83,7 @@ export default function PlayPage() {
                 params={pr}
                 balances={feedValue(app.balances)}
                 state={house?.state ?? "OPEN"}
-                priceOk={snap?.quality === "OK"}
+                priceOk={priceUsable(snap?.quality)}
                 signedIn={signedIn}
                 onPreview={setPreview}
                 onNeedFunds={() => setFunding(true)}

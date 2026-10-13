@@ -6,9 +6,12 @@ import { Prov } from "../ui";
 import { LiveFeedChip } from "../FeedHealth";
 
 export function qualityTag(q: PriceSnapshot["quality"]) {
-  const cls = q === "OK" ? "ok" : q === "STALE" || q === "INSUFFICIENT" ? "bad" : "warn";
-  const text = q === "OK" ? "Price checks OK" : q === "STALE" ? "Stale price" : q === "CONFLICT" ? "Sources disagree" : "Not enough sources";
-  return <span className={`tag ${cls}`}>{text}</span>;
+  const cls = q === "OK" ? "ok" : q === "DEGRADED" || q === "CONFLICT" ? "warn" : "bad";
+  const text = q === "OK" ? "Price checks OK"
+    : q === "DEGRADED" ? "Degraded · Hyperliquid only"
+    : q === "STALE" ? "Stale price" : q === "CONFLICT" ? "Sources disagree" : "Not enough sources";
+  const title = q === "DEGRADED" ? "Too few exchanges are fresh, so the price is Hyperliquid's liquidity-weighted mid on its own (basis-adjusted)." : undefined;
+  return <span className={`tag ${cls}`} title={title}>{text}</span>;
 }
 
 export function PriceHeader({ snap, demo }: { snap: PriceSnapshot; demo: boolean }) {
