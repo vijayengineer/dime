@@ -6,12 +6,13 @@ import { useApp } from "@/state/app";
 import { feedValue } from "@/state/services";
 
 export const INTENT_COPY: Record<IntentStatus, string> = {
-  SIGNING: "Waiting for your signature",
-  MATCHING: "Looking for a match",
-  SUBMITTED: "Submitted — waiting for the chain",
+  // One user-facing state while a request is in flight; routing happens behind it.
+  SIGNING: "Confirm in your wallet",
+  MATCHING: "Opening your position…",
+  SUBMITTED: "Opening your position…",
   OPENED: "Position opened",
-  CAPACITY_UNAVAILABLE: "House capacity unavailable",
-  EXPIRED: "Expired — no match",
+  CAPACITY_UNAVAILABLE: "Not opened",
+  EXPIRED: "Not opened",
   REJECTED: "Rejected",
   CANCELLED: "Cancelled",
 };
@@ -37,7 +38,6 @@ export function StatusRail() {
         <div className="rail-item">
           <span className="dot busy" />
           <span className="grow">{INTENT_COPY[it.status]}</span>
-          {it.status === "MATCHING" && <span className="num muted">{Math.max(0, Math.ceil((it.matchDeadline - now) / 1000))}s</span>}
         </div>
       )}
       {recentTx.map((t) => (

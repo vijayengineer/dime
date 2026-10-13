@@ -16,49 +16,26 @@ const heroDp = (v: bigint) => (v > -1_000_000n && v < 1_000_000n ? 3 : 2);
 
 /* ------------------------------------------------------------ pending request */
 export function IntentCard({ intent, onDismiss }: { intent: IntentState; onDismiss: () => void }) {
-  const s = useServices();
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 200); return () => clearInterval(t); }, []);
   const terminal = TERMINAL_INTENT.has(intent.status);
-  const matching = intent.status === "MATCHING";
-  const total = intent.draft.matchWindowMs;
-  const left = Math.max(0, intent.matchDeadline - now);
-  const frac = matching && total > 0 ? left / total : 0;
-  const R = 26, C = 2 * Math.PI * R;
   const bad = ["CAPACITY_UNAVAILABLE", "EXPIRED", "REJECTED", "CANCELLED"].includes(intent.status);
 
+  // Deliberately one in-flight state: matching vs house routing is decided behind "Opening…".
   return (
     <section className="card rise" aria-live="polite" aria-labelledby="intent-title">
       <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
-        <svg width="64" height="64" viewBox="0 0 64 64" aria-hidden>
-          <circle cx="32" cy="32" r={R} stroke="var(--line-strong)" strokeWidth="3" fill="none" strokeDasharray="3 5" />
-          {matching && (
-            <circle cx="32" cy="32" r={R} stroke="var(--yellow)" strokeWidth="3.5" fill="none" strokeLinecap="round"
-              strokeDasharray={C} strokeDashoffset={C * (1 - frac)} transform="rotate(-90 32 32)" />
-          )}
-          <text x="32" y="38" textAnchor="middle" fill="var(--chalk)" fontFamily="var(--font-jet)" fontSize="16">
-            {matching ? Math.ceil(left / 1000) : intent.status === "SUBMITTED" ? "…" : bad ? "×" : ""}
-          </text>
+        <svg width="48" height="48" viewBox="0 0 48 48" aria-hidden className={terminal ? undefined : "spin"}>
+          <circle cx="24" cy="24" r="19" stroke="var(--line-strong)" strokeWidth="3" fill="none" />
+          {!terminal && <circle cx="24" cy="24" r="19" stroke="var(--monad-ink)" strokeWidth="3.5" fill="none" strokeLinecap="round" strokeDasharray="30 200" />}
+          {bad && <text x="24" y="30" textAnchor="middle" fill="var(--bad)" fontFamily="var(--font-jet)" fontSize="16">×</text>}
         </svg>
         <div style={{ flex: 1 }}>
           <h2 id="intent-title" style={{ margin: 0, fontSize: 18 }}>{INTENT_COPY[intent.status]}</h2>
           <p className="note" style={{ margin: "2px 0 0" }}>
             {intent.draft.side === "LONG" ? "Long" : "Short"} · {usd(intent.draft.collateral)} × {intent.draft.leverage}
-            {matching && intent.draft.routes.houseFallback && " · house fallback authorised"}
-            {matching && !intent.draft.routes.houseFallback && " · match only"}
           </p>
         </div>
-        {!terminal && (intent.status === "MATCHING" || intent.status === "SIGNING") && (
-          <button className="btn small" onClick={() => s.intents.cancel(intent.id)}>Cancel</button>
-        )}
       </div>
-      {intent.status === "SUBMITTED" && <p className="note" style={{ marginBottom: 0 }}>This is not a position yet. It becomes one only when the contract confirms it.</p>}
-      {intent.reason && <p className={bad ? "warn-box" : "note"} style={{ marginBottom: 0 }}>{intent.reason}</p>}
-      {intent.timeline.length > 1 && (
-        <ol className="note" style={{ margin: "10px 0 0", paddingLeft: 18 }}>
-          {intent.timeline.map((t, i) => <li key={i}>{INTENT_COPY[t.status]}{t.note ? ` — ${t.note}` : ""}</li>)}
-        </ol>
-      )}
+      {bad && intent.reason && <p className="warn-box" style={{ marginBottom: 0 }}>{intent.reason}</p>}
       {terminal && <button className="btn small" style={{ marginTop: 10 }} onClick={onDismiss}>Dismiss</button>}
     </section>
   );

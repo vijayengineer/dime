@@ -197,7 +197,7 @@ const DraftSchema = z.object({
 });
 const quotes = new Map<string, { at: number }>();
 
-app.post("/v1/quotes", { preHandler: authenticate }, async (req, reply) => {
+app.post("/v1/quotes", { preHandler: authenticate, config: { rateLimit: { max: 120, timeWindow: "1 minute" } } }, async (req, reply) => {
   const t0 = performance.now();
   const d = DraftSchema.safeParse(req.body);
   if (!d.success) return json(reply, 400, err("BAD_REQUEST", d.error.issues[0].message));
@@ -255,7 +255,7 @@ const IntentBody = z.object({
   slippageBps: z.number().int().optional(),
 });
 
-app.post("/v1/intents", { preHandler: authenticate }, async (req, reply) => {
+app.post("/v1/intents", { preHandler: authenticate, config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req, reply) => {
   const t0 = performance.now();
   const key = String(req.headers["idempotency-key"] ?? "");
   if (!key) return json(reply, 400, err("BAD_REQUEST", "Idempotency-Key header required"));
@@ -306,7 +306,7 @@ app.get("/v1/intents/:id", async (req, reply) => {
 });
 
 /** Cancel requires a personal_sign of "DIME cancel request <id>" by the intent's wallet. */
-app.post("/v1/intents/:id/cancel", { preHandler: authenticate }, async (req, reply) => {
+app.post("/v1/intents/:id/cancel", { preHandler: authenticate, config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req, reply) => {
   const id = (req.params as { id: string }).id;
   const sig = (req.body as { signature?: string } | undefined)?.signature;
   const r = store.getIntent(id);
@@ -323,7 +323,7 @@ app.post("/v1/intents/:id/cancel", { preHandler: authenticate }, async (req, rep
 });
 
 /* ---------------------------------------------------------------- close */
-app.post("/v1/close", { preHandler: authenticate }, async (req, reply) => {
+app.post("/v1/close", { preHandler: authenticate, config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, async (req, reply) => {
   const t0 = performance.now();
   const key = String(req.headers["idempotency-key"] ?? "");
   if (!key) return json(reply, 400, err("BAD_REQUEST", "Idempotency-Key header required"));

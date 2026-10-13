@@ -463,7 +463,7 @@ export function createLiveServices(env: LiveEnv, wallet: WalletBridge): Services
               provenance: "INDEXED",
             })));
           } catch (e) { hub.error(`Envio query failed: ${(e as Error).message}`); }
-        }, 2000);
+        }, 5000);
         return () => { stop(); un(); };
       },
       subscribeIndexer(cb) {
@@ -494,7 +494,7 @@ export function createLiveServices(env: LiveEnv, wallet: WalletBridge): Services
               lagBlocks: Number(head.number - indexed), lagMs: Number(head.timestamp - blk.timestamp) * 1000,
             });
           } catch (e) { hub.error(`indexer status unavailable: ${(e as Error).message}`); }
-        }, 3000);
+        }, 6000);
         return () => { stop(); un(); };
       },
     },

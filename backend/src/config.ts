@@ -57,7 +57,7 @@ const Env = z.object({
   FAUCET_DRIP_WEI: z.coerce.bigint().default(100_000_000_000_000_000n),
   FAUCET_MIN_BALANCE_WEI: z.coerce.bigint().default(20_000_000_000_000_000n),
   MAX_QUEUE_PER_BUCKET: z.coerce.number().default(100),
-  RATE_LIMIT_PER_MIN: z.coerce.number().default(60),
+  RATE_LIMIT_PER_MIN: z.coerce.number().default(600),
   KEEPER_INTERVAL_MS: z.coerce.number().default(1000),
   WATCHDOG_INTERVAL_MS: z.coerce.number().default(2000),
   WATCHDOG_STALE_HOLD_MS: z.coerce.number().default(10000),

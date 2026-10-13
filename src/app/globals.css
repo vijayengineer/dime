@@ -435,3 +435,7 @@ table.t td:first-child { font-family: var(--font-body); }
 .terms-doc { max-width: 760px; }
 .terms-doc h2 { font-size: 17px; margin: 22px 0 6px; color: var(--chalk); }
 .terms-doc p { color: var(--chalk-2); line-height: 1.6; margin: 0 0 10px; }
+
+.spin { animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
