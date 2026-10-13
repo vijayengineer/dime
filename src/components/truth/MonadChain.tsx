@@ -148,6 +148,7 @@ function useDimeOnchain() {
 /** The animation's last hop, for real: each signed price checked by the verifier contract on Monad. */
 export function VerifiedStream() {
   const { items, error } = useVerifiedPrices();
+  const dime = useDimeOnchain();
 
   const last = items.at(-1);
   const prices = items.map((v) => v.price);
@@ -196,6 +197,21 @@ export function VerifiedStream() {
         at Monad&apos;s latest block. A trade sends the same proof on-chain when it opens or closes.
       </p>
 
+      <div className="chalk-rule" />
+      <div className="card-title" style={{ marginBottom: 6 }}>
+        <h3 style={{ margin: 0, fontSize: 15 }}>DIME contract on Monad</h3>
+        <Prov p="CONFIRMED" />
+      </div>
+      <dl className="kv">
+        <dt>Protocol</dt>
+        <dd><a href={`${MAINNET.explorer}/address/${MAINNET.protocol}`} target="_blank" rel="noreferrer">{shortHash(MAINNET.protocol)} ↗</a></dd>
+        <dt>State</dt><dd>{dime ? STATES[dime.state]?.replace("_", " ") ?? dime.state : "…"}</dd>
+        <dt>House reserve</dt><dd>{dime ? usd(dime.reserve) : "…"}</dd>
+        <dt>Open positions</dt><dd>{dime ? `${dime.openHouse} house · ${dime.openPairs} matched pairs` : "…"}</dd>
+        <dt>Access</dt><dd>{dime ? (dime.allowlist ? "Founder allow-list (commissioning)" : "Open") : "…"}</dd>
+        <dt>Rewards epoch</dt><dd>{dime ? dime.epoch.toString() : "…"}</dd>
+      </dl>
+
     </div>
   );
 }
@@ -204,7 +220,6 @@ export function VerifiedStream() {
 export function MonadBlocks() {
   const { blocks, error } = useMonadBlocks();
   const mon = useMonPrice();
-  const dime = useDimeOnchain();
   const head = blocks.at(-1), first = blocks[0];
   const span = head && first ? head.ts - first.ts : 0;
   const nBlocks = head && first ? Number(head.number - first.number) : 0;
@@ -240,21 +255,6 @@ export function MonadBlocks() {
         ))}
       </div>
       <div className="lane-axis note"><span>older</span><span>bar height = transactions per block</span><span>newest →</span></div>
-
-      <div className="chalk-rule" />
-      <div className="card-title" style={{ marginBottom: 6 }}>
-        <h3 style={{ margin: 0, fontSize: 15 }}>DIME contract on Monad</h3>
-        <Prov p="CONFIRMED" />
-      </div>
-      <dl className="kv">
-        <dt>Protocol</dt>
-        <dd><a href={`${MAINNET.explorer}/address/${MAINNET.protocol}`} target="_blank" rel="noreferrer">{shortHash(MAINNET.protocol)} ↗</a></dd>
-        <dt>State</dt><dd>{dime ? STATES[dime.state]?.replace("_", " ") ?? dime.state : "…"}</dd>
-        <dt>House reserve</dt><dd>{dime ? usd(dime.reserve) : "…"}</dd>
-        <dt>Open positions</dt><dd>{dime ? `${dime.openHouse} house · ${dime.openPairs} matched pairs` : "…"}</dd>
-        <dt>Access</dt><dd>{dime ? (dime.allowlist ? "Founder allow-list (commissioning)" : "Open") : "…"}</dd>
-        <dt>Rewards epoch</dt><dd>{dime ? dime.epoch.toString() : "…"}</dd>
-      </dl>
     </section>
   );
 }
