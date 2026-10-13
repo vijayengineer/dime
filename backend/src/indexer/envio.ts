@@ -22,6 +22,8 @@ export interface IndexerView {
 
 const KEEP = 200;
 const MAX_RANGE = 50_000n; // blocks per eth_getLogs call
+const LOGS_EVERY_MS = 15_000; // HyperRPC rate-limits eth_getLogs; the head is refreshed every tick
+const MAX_BACKOFF_MS = 300_000;
 
 export class EnvioIndexer {
   private rpc: PublicClient;
@@ -33,6 +35,8 @@ export class EnvioIndexer {
   private updatedAt: number | null = null;
   private error: string | null = null;
   private names: Map<string, string>;
+  private logsAt = 0;
+  private logsEvery = LOGS_EVERY_MS;
 
   constructor(token: string, chainId: number, private contracts: Record<string, Address>, fromBlock: bigint, private chainHead: () => Promise<bigint>) {
     this.rpc = createPublicClient({ transport: http(`https://${chainId}.rpc.hypersync.xyz/${token}`) }) as PublicClient;
@@ -42,16 +46,22 @@ export class EnvioIndexer {
 
   start(intervalMs = 2000) {
     const tick = async () => {
-      try { await this.poll(); this.error = null; }
-      catch (e) { this.error = "indexer query failed"; log.warn({ err: (e as Error).message.split("\n")[0] }, "envio poll failed"); }
+      try { await this.poll(); }
+      catch (e) {
+        this.logsEvery = Math.min(this.logsEvery * 2, MAX_BACKOFF_MS); // back off (e.g. HTTP 429)
+        this.error = "indexer query failed, retrying";
+        log.warn({ err: (e as Error).message.split("\n")[0], retryMs: this.logsEvery }, "envio poll failed");
+      }
       setTimeout(tick, intervalMs);
     };
     void tick();
   }
 
   private async poll() {
-    const [tip, head] = await Promise.all([this.rpc.getBlockNumber(), this.chainHead()]);
-    this.head = head;
+    this.head = await this.chainHead();
+    if (Date.now() - this.logsAt < this.logsEvery) return;
+    this.logsAt = Date.now();
+    const tip = await this.rpc.getBlockNumber({ cacheTime: 0 });
     while (this.next <= tip) {
       const to = this.next + MAX_RANGE - 1n < tip ? this.next + MAX_RANGE - 1n : tip;
       const logs = await this.rpc.getLogs({ address: Object.values(this.contracts), fromBlock: this.next, toBlock: to });
@@ -69,6 +79,8 @@ export class EnvioIndexer {
     }
     this.indexed = tip;
     this.updatedAt = Date.now();
+    this.logsEvery = LOGS_EVERY_MS;
+    this.error = null;
   }
 
   view(limit = 20): IndexerView {

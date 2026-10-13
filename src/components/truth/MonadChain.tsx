@@ -240,14 +240,14 @@ export function EnvioIndexer() {
     <section className="card" aria-labelledby="idx-title">
       <div className="card-title"><h2 id="idx-title">Indexer</h2><Prov p="INDEXED" /></div>
       {!v && !error && <p className="note">Loading…</p>}
-      {error && <p className="warn-box">Indexer unavailable: {error}</p>}
+      {error && (!v?.updatedAt || Date.now() - v.updatedAt > 60_000) && <p className="warn-box">Indexer behind: {error}</p>}
       {v && (
         <>
           <dl className="kv">
             <dt>Source</dt><dd>{v.source}</dd>
             <dt>Indexed block</dt><dd>{v.indexedBlock ? `#${Number(v.indexedBlock).toLocaleString()}` : "—"}</dd>
             <dt>Chain head</dt><dd>{v.chainHead ? `#${Number(v.chainHead).toLocaleString()}` : "—"}</dd>
-            <dt>Lag</dt><dd>{v.lagBlocks ?? "—"} blocks</dd>
+            <dt>Lag</dt><dd>{v.lagBlocks ?? "—"} blocks{v.updatedAt ? ` · updated ${ago(Math.max(0, Date.now() - v.updatedAt))} ago` : ""}</dd>
             <dt>DIME events indexed</dt><dd>{v.events}</dd>
           </dl>
           {v.recent.length > 0 && (
