@@ -84,11 +84,10 @@ export default function HousePage() {
       <details className="explain">
         <summary>What DIME is — and isn&apos;t</summary>
         <ul>
-          <li>Issued only on new net losses on <em>house</em> trades (above your previous high-water mark). Matched-trade losses pay the other trader and issue nothing.</li>
           <li>Auto-staked when issued; stake earns from the epoch after it&apos;s added. Unstaked DIME earns nothing.</li>
           <li>Staked DIME shares up to {pct(params?.distributionShareBps ?? 2000, 0)} of new house earnings each epoch, paid in USDC — only after earlier house losses are recovered and the reserve floor is kept. Many epochs may pay nothing.</li>
           <li>Not a refund, not a claim on house funds, no guaranteed yield. New issuance dilutes everyone.</li>
-          <li>{feedValue(app.rights)?.transfersEnabled ? "Transferable." : "Currently non-transferable: it can only be staked, unstaked and held. Transfers may be enabled later by the protocol admin (one-way)."}</li>
+          <li>{feedValue(app.rights)?.transfersEnabled ? "Transferable." : "Currently non-transferable: it can only be staked, unstaked and held."}</li>
         </ul>
       </details>
     </div>

@@ -1,10 +1,10 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
-import type { DemoScenario } from "@/adapters/types";
 import { ago, pct, price, shortHash, time, usd } from "@/components/format";
 import { qualityTag } from "@/components/play/PriceHeader";
 import { FeedHealth } from "@/components/FeedHealth";
+import { MonadChain } from "@/components/truth/MonadChain";
 import { FeedGate, Prov } from "@/components/ui";
 import type { ActivityItem, ProtocolState } from "@/domain/types";
 import { useApp } from "@/state/app";
@@ -30,12 +30,12 @@ export default function TruthPage() {
         <h1 className="display" style={{ fontSize: 40, margin: "4px 0 0" }}>Truth</h1>
         <p className="dim" style={{ marginTop: 4, maxWidth: 720 }}>
           What is actually true right now: where the price comes from and how healthy it is, the protocol&apos;s risk state,
-          what the chain and the indexer say, and how fast things really are. Every number is tagged:{" "}
+          what Monad and the indexer say right now. Every number is tagged:{" "}
           <Prov p="ESTIMATE" /> model values, <Prov p="CONFIRMED" /> contract state, <Prov p="INDEXED" /> Envio history.
         </p>
       </header>
 
-        <section className="card" aria-labelledby="px-title">
+      <section className="card" aria-labelledby="px-title">
         <div className="card-title"><h2 id="px-title">Price feed health</h2><Prov p="ESTIMATE" demo={demo && !feedValue(app.price)?.liveMarketData} /></div>
         <FeedGate feed={app.price} label="Price">
           {(p) => (
@@ -56,6 +56,8 @@ export default function TruthPage() {
           )}
         </FeedGate>
       </section>
+
+      <MonadChain />
 
       <div className="grid-2">
         <section className="card" aria-labelledby="risk-title">
@@ -99,8 +101,7 @@ export default function TruthPage() {
         </FeedGate>
       </section>
 
-      <Metrics demo={demo} />
-      {s.demo && app.scenario && <ScenarioLab scenario={app.scenario} />}
+      <Metrics />
     </div>
   );
 }
@@ -132,7 +133,7 @@ const METRIC_LABEL: Record<MetricKey, string> = {
   eventToScreenMs: "Event → on screen (indexed)",
 };
 
-function Metrics({ demo }: { demo: boolean }) {
+function Metrics() {
   useSyncExternalStore(subscribeMetrics, metricsVersion, () => 0);
   const m = summary();
   const o = m.outcomes;
@@ -140,8 +141,7 @@ function Metrics({ demo }: { demo: boolean }) {
   const f = (v: number | null) => (v == null ? "—" : `${Math.round(v)}ms`);
   return (
     <section className="card" aria-labelledby="perf-title">
-      <div className="card-title"><h2 id="perf-title">Measured in this browser</h2><span className="tag">{demo ? "demo timings" : "live"}</span></div>
-      {demo && <p className="warn-box">Demo timings measure the local engine&apos;s artificial delays, not Monad, the backend or Envio. Don&apos;t quote them as performance.</p>}
+      <div className="card-title"><h2 id="perf-title">Measured in this browser</h2></div>
       <div className="table-scroll">
         <table className="t">
           <thead><tr><th>Measure</th><th>n</th><th>p50</th><th>p95</th><th>p99</th></tr></thead>
@@ -158,67 +158,5 @@ function Metrics({ demo }: { demo: boolean }) {
         {requests > 0 && ` · match acceptance ${((o.matched / requests) * 100).toFixed(0)}%`}
       </p>
     </section>
-  );
-}
-
-function ScenarioLab({ scenario }: { scenario: DemoScenario }) {
-  const s = useServices();
-  const d = s.demo!;
-  const opt = <K extends keyof DemoScenario>(k: K, values: DemoScenario[K][], label: string) => (
-    <div className="field">
-      <span className="label">{label}</span>
-      <div className="chips" role="group" aria-label={label}>
-        {values.map((v) => (
-          <button key={String(v)} className="chip" aria-pressed={scenario[k] === v} onClick={() => d.setScenario({ [k]: v } as Partial<DemoScenario>)}>{String(v).replace("_", " ").toLowerCase()}</button>
-        ))}
-      </div>
-    </div>
-  );
-  return (
-    <section className="card" aria-labelledby="lab-title" style={{ borderStyle: "dashed", borderColor: "rgba(242,208,107,.5)" }}>
-      <div className="card-title"><h2 id="lab-title">Scenario lab</h2><span className="tag demo">Demo only</span></div>
-      <p className="note" style={{ marginTop: 0 }}>
-        Force edge cases to review how the UI reports them. Not available in live mode.
-        {d.liveFeed && " Prices are live market data, so synthetic gaps are disabled; the stale/conflict switches still override quality for testing."}
-      </p>
-      <div className="grid-2">
-        <div>
-          {opt("counterparty", ["available", "none"], "Matching counterparty")}
-          {opt("houseCapacity", ["normal", "exhausted"], "House capacity")}
-        </div>
-        <div>
-          {opt("oracle", ["ok", "stale", "conflict"], "Price sources")}
-          {opt("protocolState", ["OPEN", "CLOSE_ONLY", "ORACLE_HOLD", "WIND_DOWN"], "Protocol state")}
-        </div>
-      </div>
-      <div className="chips" style={{ marginTop: 14 }}>
-        <button className="btn small" disabled={d.liveFeed} title={d.liveFeed ? "Disabled: prices are live market data" : undefined} onClick={() => d.priceShock(15)}>Gap +0.15%</button>
-        <button className="btn small" disabled={d.liveFeed} title={d.liveFeed ? "Disabled: prices are live market data" : undefined} onClick={() => d.priceShock(-15)}>Gap −0.15%</button>
-        <button className="btn small" onClick={() => d.counterpartyClose()}>Counterparty closes</button>
-        <button className="btn small" onClick={() => d.fixtureHouseResult(-500_000n)}>Fixture wallet loses $0.50 to house</button>
-        <button className="btn small" onClick={() => d.fixtureHouseResult(300_000n)}>Fixture wallet wins $0.30 net</button>
-        <button className="btn small" onClick={() => d.advanceEpoch()}>End epoch</button>
-        <button className="btn small danger" onClick={() => d.reset()}>Reset demo</button>
-      </div>
-      {d.liveFeed && <FailoverDrill />}
-      <div>
-      </div>
-    </section>
-  );
-}
-
-/** Demo-only: asks the (non-production) pricing service to kill one redundant link. */
-function FailoverDrill() {
-  const base = (process.env.NEXT_PUBLIC_PRICE_FEED_URL ?? "").replace(/^ws/, "http").replace(/\/feed$/, "");
-  const drop = (source: string, conn: number) => fetch(`${base}/debug/drop?source=${source}&conn=${conn}`, { method: "POST" }).catch(() => {});
-  return (
-    <div style={{ marginTop: 14 }}>
-      <div className="label" style={{ fontSize: 13, color: "var(--chalk-2)" }}>Failover drill (live feed)</div>
-      <div className="chips" style={{ marginTop: 6 }}>
-        <button className="btn small" onClick={() => drop("binance", 0)}>Drop Binance link #1</button>
-        <button className="btn small" onClick={() => drop("hyperliquid", 0)}>Drop Hyperliquid link #1</button>
-      </div>
-      <p className="note">Watch Price feed health: the link dot goes red, the other link keeps updates flowing (gaps stay 0), and the dropped link reconnects with backoff on the next endpoint.</p>
-    </div>
   );
 }

@@ -18,7 +18,6 @@ export function Shell({ children }: { children: ReactNode }) {
       <AppStateProvider>
         <Header />
         <main className="shell" id="main">
-          <ModeBanner />
           {children}
         </main>
         <Footer />
@@ -50,7 +49,7 @@ function Header() {
       </nav>
       <span className="spacer" />
       <span className="hide-sm"><BuiltOnMonad /></span>
-      <span className={`tape ${s.mode === "live" ? "live" : ""}`}>{s.mode === "demo" ? "Demo mode" : s.chain.name}</span>
+      <span className={`tape ${s.mode === "live" ? "live" : ""}`}>{s.mode === "demo" ? `${brand.name}: Paper` : s.chain.name}</span>
       <AccountButton />
     </header>
   );
@@ -65,9 +64,7 @@ function Footer() {
           <div className="footer-brand"><DimeMark size={22} /> <strong>{brand.name}</strong> <span className="muted">· {brand.expansion}</span></div>
           <p className="note" style={{ margin: "6px 0 0", maxWidth: 520 }}>
             {s.mode === "demo"
-              ? s.demo?.liveFeed
-                ? "Demo build: live BTC market data; trading, balances and counterparties are simulated. Not a deployed financial protocol."
-                : "Demo build: synthetic prices and fixtures. Not a deployed financial protocol."
+              ? `${brand.name}: Paper. Live BTC prices; trades and balances are paper, not real money.`
               : "Leveraged trading can lose your full margin quickly. Rights are not a refund and may earn nothing."}
           </p>
         </div>
@@ -90,26 +87,6 @@ function TabBar() {
         </Link>
       ))}
     </nav>
-  );
-}
-
-function ModeBanner() {
-  const s = useServices();
-  if (s.mode !== "demo") return null;
-  if (s.demo?.liveFeed) {
-    return (
-      <p className="demo-banner" role="note">
-        <strong>Demo mode with live market data.</strong> BTC prices are real (Hyperliquid, Binance and other venues, via the
-        DIME pricing service). Trading, balances, the counterparty and prior house activity are simulated. Nothing here is
-        real money or a real fill.
-      </p>
-    );
-  }
-  return (
-    <p className="demo-banner" role="note">
-      <strong>Demo mode.</strong> Prices are synthetic, the counterparty and prior house activity are fixtures, and no
-      chain, Privy, oracle or Envio connection exists. Nothing here is real money or a real fill.
-    </p>
   );
 }
 

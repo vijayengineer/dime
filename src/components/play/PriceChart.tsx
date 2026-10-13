@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import {
-  AreaSeries, createChart, LineStyle, type IChartApi, type IPriceLine, type ISeriesApi, type UTCTimestamp,
+  AreaSeries, createChart, LastPriceAnimationMode, LineStyle, type IChartApi, type IPriceLine, type ISeriesApi, type UTCTimestamp,
 } from "lightweight-charts";
 import { PRICE_DECIMALS } from "@/config/protocol";
 import { toFloat } from "@/domain/fixed";
@@ -10,7 +10,7 @@ import type { PricePoint } from "@/domain/types";
 
 export interface ChartLine { price: bigint; label: string; kind: "entry" | "liq" | "preview-liq" }
 
-const COLORS = { chalk: "#f3ecdc", grid: "rgba(243,236,220,0.06)", text: "#9e978a", entry: "#f2d06b", liq: "#ff8a7a" };
+const COLORS = { chalk: "#fffaee", grid: "rgba(243,236,220,0.08)", text: "#cdc6b6", entry: "#f2d06b", liq: "#ff8a7a" };
 
 /** BTC indicative price (model estimate) with entry and liquidation markers. Display only: floats never re-enter accounting. */
 export function PriceChart({ points, lines, ariaLabel }: { points: PricePoint[]; lines: ChartLine[]; ariaLabel: string }) {
@@ -33,7 +33,8 @@ export function PriceChart({ points, lines, ariaLabel }: { points: PricePoint[];
       handleScale: { axisPressedMouseMove: true },
     });
     const s = c.addSeries(AreaSeries, {
-      lineColor: COLORS.chalk, lineWidth: 2, topColor: "rgba(243,236,220,0.16)", bottomColor: "rgba(243,236,220,0.0)",
+      lineColor: COLORS.chalk, lineWidth: 3, topColor: "rgba(255,250,238,0.34)", bottomColor: "rgba(110,84,255,0.04)",
+      lastPriceAnimation: LastPriceAnimationMode.Continuous,
       priceFormat: { type: "price", precision: 2, minMove: 0.01 }, lastValueVisible: true, priceLineVisible: false,
       // Keep entry/liquidation markers inside the visible range.
       autoscaleInfoProvider: (base: () => { priceRange: { minValue: number; maxValue: number } } | null) => {

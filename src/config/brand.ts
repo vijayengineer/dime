@@ -7,7 +7,7 @@ export const brand = {
   name: "DIME",
   /** Formal expansion for docs/footer; the playful one is for marketing only. */
   expansion: "Degen Intelligence Monad Exchange",
-  tagline: "Not paper. Real trades, dime-sized.",
+  tagline: "Trade BTC, dime-sized. Built on Monad.",
   /** Non-transferable earnings rights issued on eligible house-trade losses. */
   rightsName: "DIME rights",
   rightsUnit: "rights",

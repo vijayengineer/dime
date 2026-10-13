@@ -173,9 +173,6 @@ export function SettlementCard({ s, onDone }: { s: Settlement; onDone: () => voi
           can&apos;t be sold or redeemed for principal, activate next epoch, and may never earn anything.
         </p>
       )}
-      {!win && !flat && s.rightsIssued === 0n && s.route === "MATCHED" && (
-        <p className="note">Matched-trade losses go to the winning trader and do not issue {brand.rightsName}.</p>
-      )}
       <div className="sides" style={{ marginTop: 12 }}>
         <Link className="btn" href="/truth">See it in Truth</Link>
         <button className="btn" onClick={onDone}>Done</button>

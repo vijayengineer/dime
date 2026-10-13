@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import type { PriceSnapshot } from "@/domain/types";
 import { ago, pct, price } from "../format";
 import { Prov } from "../ui";
@@ -15,11 +16,21 @@ export function qualityTag(q: PriceSnapshot["quality"]) {
 }
 
 export function PriceHeader({ snap, demo }: { snap: PriceSnapshot; demo: boolean }) {
+  // Brief up/down tint on each change; the number itself stays in text ink.
+  const prev = useRef(snap.estimate);
+  const [dir, setDir] = useState<"up" | "down" | null>(null);
+  useEffect(() => {
+    if (snap.estimate === prev.current) return;
+    setDir(snap.estimate > prev.current ? "up" : "down");
+    prev.current = snap.estimate;
+    const t = setTimeout(() => setDir(null), 500);
+    return () => clearTimeout(t);
+  }, [snap.estimate]);
   return (
     <div className="price-head">
       <div>
-        <div className="muted" style={{ fontSize: 13 }}>BTC · USD</div>
-        <div className="hero-num" aria-live="off">{price(snap.estimate)}</div>
+        <div className="pair-label">BTC · USD</div>
+        <div className={`hero-num price-num ${dir ?? ""}`} aria-live="off">{price(snap.estimate)}</div>
       </div>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", paddingBottom: 6 }}>
         <Prov p="ESTIMATE" demo={demo && !snap.liveMarketData} />

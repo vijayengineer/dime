@@ -85,7 +85,7 @@ button { font: inherit; color: inherit; }
 .dime-mark { color: var(--yellow); transform: rotate(-8deg); transition: transform 0.4s ease; }
 .wordmark:hover .dime-mark { transform: rotate(352deg); }
 .wordmark small { font-family: var(--font-body); font-size: 11px; color: var(--chalk-3); letter-spacing: 0.04em; }
-@media (max-width: 480px) { .wordmark small { display: none; } .demo-banner { font-size: 12px; } }
+@media (max-width: 480px) { .wordmark small { display: none; } }
 .topnav { display: none; gap: 4px; margin-left: 18px; }
 .topnav a, .tabbar a {
   text-decoration: none; padding: 8px 14px; border-radius: 999px; color: var(--chalk-2); font-weight: 500;
@@ -120,10 +120,6 @@ button { font: inherit; color: inherit; }
   box-shadow: 0 2px 0 rgba(0, 0, 0, 0.3);
 }
 .tape.live { background: var(--long); color: #04110e; transform: none; }
-.demo-banner {
-  margin: 4px 0 14px; padding: 10px 14px; border: 1px dashed var(--yellow); border-radius: var(--radius-sm);
-  color: var(--yellow-ink); font-size: 13px;
-}
 
 /* ------------------------------------------------------------------ cards */
 .card {
@@ -219,6 +215,10 @@ input[type="range"] { width: 100%; accent-color: var(--yellow); height: 32px; }
 .stat .value { font-family: var(--font-mono); font-size: 18px; margin-top: 4px; font-variant-numeric: tabular-nums; }
 
 /* ------------------------------------------------------------------ chart */
+.price-num { font-size: clamp(36px, 7vw, 56px); color: #fffaee; text-shadow: 0 0 24px rgba(255, 250, 238, 0.22), 0 0 2px rgba(255, 250, 238, 0.5); transition: color .5s ease, text-shadow .5s ease; }
+.price-num.up { color: var(--long-ink); text-shadow: 0 0 24px rgba(116, 226, 209, 0.35); transition: none; }
+.price-num.down { color: var(--short-ink); text-shadow: 0 0 24px rgba(255, 157, 124, 0.35); transition: none; }
+.pair-label { font-size: 13px; color: var(--chalk-2); letter-spacing: 0.08em; font-weight: 600; }
 .price-head { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 16px; margin-bottom: 8px; }
 .chart-box { height: 230px; position: relative; margin: 0 -6px; }
 @media (min-width: 600px) { .chart-box { height: 340px; } }
@@ -393,3 +393,20 @@ table.t td:first-child { font-family: var(--font-body); }
 .oi-track { height: 10px; border-radius: 4px; background: var(--board); border: 1px solid var(--line); overflow: hidden; }
 .oi-fill { display: block; height: 100%; border-radius: 0 4px 4px 0; min-width: 0; }
 .oi-val { text-align: right; }
+
+/* ------------------------------------------------------------------ monad chain (truth) */
+.monad-card { border-color: rgba(110, 84, 255, 0.35); background: linear-gradient(180deg, rgba(110, 84, 255, 0.08), transparent 55%), var(--board-2); }
+.pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--monad-ink); box-shadow: 0 0 0 0 rgba(179, 166, 255, 0.6); animation: pulse 1.6s infinite; align-self: center; }
+.pulse.off { background: var(--bad); animation: none; }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(179, 166, 255, 0.55); } 70% { box-shadow: 0 0 0 8px rgba(179, 166, 255, 0); } 100% { box-shadow: 0 0 0 0 rgba(179, 166, 255, 0); } }
+.block-lane { display: flex; align-items: flex-end; gap: 2px; height: 120px; margin-top: 14px; padding: 8px; border-radius: var(--radius-sm); background: var(--board); border: 1px solid var(--line); overflow: hidden; }
+.blk { flex: 1 1 0; min-width: 6px; height: 100%; position: relative; display: flex; align-items: flex-end; border-radius: 4px; background: rgba(110, 84, 255, 0.08); animation: blk-in .35s ease-out; }
+.blk .fill { width: 100%; border-radius: 4px 4px 2px 2px; background: linear-gradient(180deg, var(--monad-ink), var(--monad)); transition: height .3s ease; }
+.blk.head .fill { background: linear-gradient(180deg, var(--monad-soft), var(--monad-ink)); box-shadow: 0 0 14px rgba(179, 166, 255, 0.55); }
+.blk .txs { position: absolute; top: 4px; left: 0; right: 0; text-align: center; font-size: 10px; color: var(--chalk-3); }
+.blk.head .txs { color: var(--chalk); }
+.blk:hover { background: rgba(110, 84, 255, 0.2); }
+@media (max-width: 600px) { .blk:nth-child(-n+12) { display: none; } .blk .txs { display: none; } }
+.lane-axis { display: flex; justify-content: space-between; margin: 6px 2px 0; font-size: 11px; }
+@keyframes blk-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .blk, .pulse { animation: none; } .price-num { transition: none; } }

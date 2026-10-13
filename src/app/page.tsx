@@ -47,7 +47,7 @@ export default function PlayPage() {
     {!position && !intentBusy && (
       <section className="hero-strip" aria-label="About">
         <div>
-          <h1>Not paper. Real trades, <em>dime-sized.</em></h1>
+          <h1>{s.mode === "demo" ? <>Paper trade BTC, <em>dime-sized.</em></> : <>Trade BTC, <em>dime-sized.</em></>}</h1>
           <p>Go long or short on BTC against another trader or the house. Your margin is the most you can lose.</p>
         </div>
         {params && (
