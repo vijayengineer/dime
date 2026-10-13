@@ -116,7 +116,14 @@ function StakeBand() {
     try {
       if (kind === "claim") await s.rights.claim();
       else {
-        const v = parseUnits(amt || "0", 18);
+        let v = parseUnits(amt || "0", 18);
+        // Never send more than is held: amounts typed from the rounded display snap to the exact balance.
+        const limit = kind === "stake" ? wallet : staked;
+        if (v > limit) {
+          if (v - limit <= 10n ** 12n) v = limit; // within 0.000001 DIME: display rounding
+          else throw new Error(`You only have ${dime(limit)} DIME ${kind === "stake" ? "in your wallet" : "staked"}.`);
+        }
+        if (v <= 0n) throw new Error("Enter an amount.");
         await (kind === "stake" ? s.rights.stake(v) : s.rights.unstake(v));
         setAmt("");
       }
