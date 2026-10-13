@@ -2,9 +2,9 @@
  * Auto-execution policy — the user just picks side, margin and leverage; the backend picks the rest.
  * Shared by the backend quote endpoint and the demo engine so both behave identically.
  *
- *  - Route: always try to match with another trader first. Fall back to the house only if the house
- *    can back the trade right now; otherwise match-only with a longer window.
- *  - Window: short when the house is available (fast fill either way), longer when it isn't.
+ *  - Route: the house takes the other side immediately whenever it can back the trade (house-only
+ *    intent, no matching window, opens in about a second). Peer matching is the overflow path, used
+ *    only when the house is full: match-only with a short window.
  *  - Price tolerance: ¼ of the liquidation distance, between 1 and 10 bp, so a fill can never land
  *    near liquidation.
  * The user still authorises all of this: it is in the signed intent and shown on the review sheet.
@@ -22,7 +22,6 @@ export interface AutoExecution {
   summary: string;
 }
 
-export const AUTO_WINDOW_WITH_HOUSE_MS = 3000;
 export const AUTO_WINDOW_MATCH_ONLY_MS = 8000;
 
 export function autoExecution(i: AutoExecutionInput): AutoExecution {
@@ -30,12 +29,12 @@ export function autoExecution(i: AutoExecutionInput): AutoExecution {
   const slippageBps = Math.max(1, Math.min(10, Math.floor(liqBps / 4)));
   if (i.houseAvailable) {
     return {
-      routes: { matched: true, houseFallback: true }, matchWindowMs: AUTO_WINDOW_WITH_HOUSE_MS, slippageBps,
-      summary: `Matches you with another trader for up to ${AUTO_WINDOW_WITH_HOUSE_MS / 1000}s; if none, the house takes the other side.`,
+      routes: { matched: false, houseFallback: true }, matchWindowMs: 0, slippageBps,
+      summary: "The house takes the other side straight away.",
     };
   }
   return {
     routes: { matched: true, houseFallback: false }, matchWindowMs: AUTO_WINDOW_MATCH_ONLY_MS, slippageBps,
-    summary: `House capacity is full, so this only opens if another trader matches within ${AUTO_WINDOW_MATCH_ONLY_MS / 1000}s.`,
+    summary: `The house is full right now, so this opens only if another trader takes the other side within ${AUTO_WINDOW_MATCH_ONLY_MS / 1000}s.`,
   };
 }
