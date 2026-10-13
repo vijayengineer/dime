@@ -12,7 +12,12 @@ import type { RightsSnapshot } from "@/domain/types";
 import { useApp } from "@/state/app";
 import { feedValue, useServices } from "@/state/services";
 
-const dime = (v: bigint, dp = 4) => fmtAmount(v, 18, dp);
+// Tiny amounts (e.g. DIME from a $0.10 trade) get more decimals so they never read as zero.
+const dime = (v: bigint, dp = 4) => fmtAmount(v, 18, v > 0n && v < 10n ** 16n ? 6 : dp);
+const untilText = (ms: number) => {
+  const m = Math.max(0, Math.round(ms / 60_000));
+  return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`;
+};
 const plain = (v: bigint) => fmtAmount(v, 18, 18).replace(/,/g, "").replace(/\.?0+$/, "") || "0";
 
 export default function HousePage() {
@@ -100,6 +105,7 @@ function StakeBand() {
   const params = feedValue(app.params);
   const signedIn = !!feedValue(app.account);
   const r = signedIn ? feedValue(app.rights) : undefined;
+  const house = feedValue(app.house);
   const [amt, setAmt] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -132,7 +138,11 @@ function StakeBand() {
           <DimeStack active={active} pending={pending} minStake={minStake} />
           <div className="stack-caption">
             <div className="num" style={{ fontSize: 20 }}>{dime(staked)} <span className="muted" style={{ fontSize: 13 }}>DIME staked</span></div>
-            <div className="note">{r ? `${pct(r.participationBps)} of all stake · ${dime(pending)} activating` : "Your stack grows as you stake"}</div>
+            <div className="note">
+              {!r ? "Your stack grows as you stake"
+                : pending > 0n ? `${dime(pending)} starts earning ${house?.epochEndsAt ? `in ${untilText(house.epochEndsAt - Date.now())}` : "next epoch"}`
+                : `${pct(r.participationBps)} of all stake`}
+            </div>
           </div>
         </div>
 

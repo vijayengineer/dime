@@ -353,13 +353,14 @@ export function createLiveServices(env: LiveEnv, wallet: WalletBridge): Services
         const un = hub.subscribe(cb);
         const stop = poll(async () => {
           try {
-            const [s, st, ep, funded, claimed, block] = await Promise.all([
+            const [s, st, ep, funded, claimed, block, startedAt] = await Promise.all([
               pub.readContract({ ...vault, functionName: "houseStats" }),
               pub.readContract({ ...vault, functionName: "protocolState" }),
               pub.readContract({ ...vault, functionName: "epoch" }),
               pub.readContract({ ...vault, functionName: "distributionsFunded" }),
               pub.readContract({ ...vault, functionName: "distributionsClaimed" }),
               pub.getBlockNumber(),
+              pub.readContract({ ...vault, functionName: "epochStartedAt" }),
             ]);
             hub.ok({
               reserve: s.reserve, reservedLiabilities: s.reservedLiabilities, unrealisedOwed: 0n,
@@ -372,7 +373,7 @@ export function createLiveServices(env: LiveEnv, wallet: WalletBridge): Services
               houseShortNotional: s.houseShortNotional, matchedNotionalPerSide: s.matchedNotionalPerSide,
               openHousePositions: s.openHousePositions,
               openMatchedPairs: s.openMatchedPairs, state: STATES[st] ?? "INSOLVENT", epoch: Number(ep),
-              epochEndsAt: 0, provenance: "CONFIRMED", block,
+              epochEndsAt: params ? (Number(startedAt) + params.epochSeconds) * 1000 : 0, provenance: "CONFIRMED", block,
             });
           } catch (e) { hub.error(`house read failed: ${(e as Error).message}`); }
         }, 2000);

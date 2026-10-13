@@ -439,3 +439,15 @@ table.t td:first-child { font-family: var(--font-body); }
 .spin { animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+
+/* ------------------------------------------------------------------ docs */
+.docs-pill { display: inline-flex; align-items: center; gap: 7px; padding: 5px 12px 5px 6px; border-radius: 999px; text-decoration: none;
+  font-weight: 600; font-size: 13px; color: var(--chalk); border: 1px solid var(--line-strong); background: var(--board-2); }
+.docs-pill:hover, .docs-pill[aria-current="page"] { border-color: var(--yellow); color: var(--yellow-ink); }
+.docs { max-width: 820px; }
+.docs nav.toc { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }
+.docs h2 { font-size: 20px; margin: 4px 0 8px; }
+.docs p, .docs li { color: var(--chalk-2); line-height: 1.65; }
+.docs ul, .docs ol { padding-left: 20px; margin: 6px 0 10px; }
+.docs code { font-family: var(--font-mono); font-size: 0.92em; }
+.docs .addr { font-family: var(--font-mono); font-size: 13px; word-break: break-all; }

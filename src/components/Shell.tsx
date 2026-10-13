@@ -52,7 +52,9 @@ function Header() {
       </nav>
       <span className="spacer" />
       <span className="hide-sm"><BuiltOnMonad /></span>
-      <span className={`tape ${s.mode === "live" ? "live" : ""}`}>{s.mode === "demo" ? `${brand.name}: Paper` : s.chain.name}</span>
+      {s.mode === "demo"
+        ? <span className="tape">{brand.name}: Paper</span>
+        : <Link href="/docs" className="docs-pill" aria-current={path === "/docs" ? "page" : undefined}><DimeMark size={18} /> Docs</Link>}
       <AccountButton />
     </header>
   );
