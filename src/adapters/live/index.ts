@@ -76,9 +76,12 @@ export function createLiveServices(env: LiveEnv, wallet: WalletBridge): Services
     ws = new WebSocket(env.streamUrl);
     ws.onopen = async () => {
       streamStatus.ok(true);
-      const token = await wallet.getAccessToken();
-      ws?.send(JSON.stringify({ op: "auth", token }));
+      // Subscribe first: public channels (price) must not depend on a session token.
       for (const ch of streamListeners.keys()) ws?.send(JSON.stringify({ op: "subscribe", channel: ch }));
+      try {
+        const token = await wallet.getAccessToken();
+        if (token) ws?.send(JSON.stringify({ op: "auth", token }));
+      } catch { /* signed out or session unavailable: public channels still work */ }
     };
     ws.onmessage = (ev) => {
       const m = JSON.parse(ev.data as string) as Msg;
@@ -87,6 +90,8 @@ export function createLiveServices(env: LiveEnv, wallet: WalletBridge): Services
     ws.onclose = () => { ws = null; streamStatus.error("stream disconnected"); setTimeout(ensureStream, 2000); };
   }
   function onChannel(channel: string, cb: (d: unknown) => void) {
+    // The API lowercases wallet channels (intents:/settlements:/tx:), so key listeners the same way.
+    if (!channel.startsWith("price:")) channel = channel.toLowerCase();
     ensureStream();
     if (!streamListeners.has(channel)) {
       streamListeners.set(channel, new Set());
@@ -199,16 +204,18 @@ export function createLiveServices(env: LiveEnv, wallet: WalletBridge): Services
           const a = me();
           if (!a) return;
           try {
-            const [free, locked, deposited, walletBal, block] = await Promise.all([
+            const [free, locked, deposited, walletBal, block, gated, listed] = await Promise.all([
               pub.readContract({ ...vault, functionName: "freeBalance", args: [a.address] }),
               pub.readContract({ ...vault, functionName: "lockedCollateral", args: [a.address] }),
               pub.readContract({ ...vault, functionName: "depositedTotal", args: [a.address] }),
               pub.readContract({ address: env.usdc, abi: erc20Abi, functionName: "balanceOf", args: [a.address] }),
               pub.getBlockNumber(),
+              pub.readContract({ ...vault, functionName: "allowlistEnabled" }),
+              pub.readContract({ ...vault, functionName: "allowlisted", args: [a.address] }),
             ]);
             hub.ok({
               free, positionCollateral: locked, pendingCollateral: 0n, wallet: walletBal, depositedTotal: deposited,
-              fundingCap: params?.fundingCapPerWallet ?? 0n, provenance: "CONFIRMED", block,
+              fundingCap: params?.fundingCapPerWallet ?? 0n, allowlisted: !gated || listed, provenance: "CONFIRMED", block,
             });
           } catch (e) { hub.error(`balance read failed: ${(e as Error).message}`); }
         }, 2000);
@@ -438,6 +445,13 @@ export function createLiveServices(env: LiveEnv, wallet: WalletBridge): Services
           const a = me();
           if (!a) return hub.ok([]);
           try {
+            if (!env.envioUrl) {
+              const r = await api<{ items: { id: string; kind: string; at: number; title: string; amount?: string; txHash: string; block: string }[] }>(`/v1/activity/${a.address}`);
+              return hub.ok(r.items.map((x) => ({
+                id: x.id, kind: x.kind as ActivityItem["kind"], at: x.at, title: x.title,
+                amount: x.amount != null ? BigInt(x.amount) : undefined, txHash: x.txHash as Hash, block: BigInt(x.block), provenance: "INDEXED",
+              })));
+            }
             const r = await fetch(env.envioUrl, {
               method: "POST", headers: { "content-type": "application/json" },
               body: JSON.stringify({ query: ACTIVITY_QUERY, variables: { user: a.address.toLowerCase() } }),
@@ -458,6 +472,17 @@ export function createLiveServices(env: LiveEnv, wallet: WalletBridge): Services
         const un = hub.subscribe(cb);
         const stop = poll(async () => {
           try {
+            if (!env.envioUrl) {
+              const v = await api<{ indexedBlock: string | null; chainHead: string | null; lagBlocks: number | null }>("/v1/indexer");
+              const indexed = v.indexedBlock ? BigInt(v.indexedBlock) : null;
+              const blk = indexed != null ? await pub.getBlock({ blockNumber: indexed }) : null;
+              const head = await pub.getBlock();
+              return hub.ok({
+                connected: indexed != null, indexedBlock: indexed, indexedHash: blk?.hash ?? null, chainHead: head.number,
+                lagBlocks: indexed != null ? Number(head.number - indexed) : null,
+                lagMs: blk ? Math.max(0, Number(head.timestamp - blk.timestamp) * 1000) : null,
+              });
+            }
             const [r, head] = await Promise.all([
               fetch(env.envioUrl, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ query: INDEXER_QUERY }) }).then((x) => x.json()),
               pub.getBlock(),

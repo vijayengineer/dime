@@ -8,7 +8,8 @@ export interface LiveEnv {
   explorerUrl: string | null;
   apiUrl: string;
   streamUrl: string;
-  envioUrl: string;
+  /** Hosted Envio GraphQL. Optional: without it, history and indexer status come from the DIME API (Envio HyperRPC). */
+  envioUrl: string | null;
   vault: Address;
   usdc: Address;
   usdcDecimals: number;
@@ -21,7 +22,6 @@ export function readLiveEnv(): { ok: true; env: LiveEnv } | { ok: false; missing
     NEXT_PUBLIC_RPC_URL: process.env.NEXT_PUBLIC_RPC_URL,
     NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
     NEXT_PUBLIC_STREAM_URL: process.env.NEXT_PUBLIC_STREAM_URL,
-    NEXT_PUBLIC_ENVIO_GRAPHQL_URL: process.env.NEXT_PUBLIC_ENVIO_GRAPHQL_URL,
     NEXT_PUBLIC_VAULT_ADDRESS: process.env.NEXT_PUBLIC_VAULT_ADDRESS,
     NEXT_PUBLIC_USDC_ADDRESS: process.env.NEXT_PUBLIC_USDC_ADDRESS,
     NEXT_PUBLIC_USDC_DECIMALS: process.env.NEXT_PUBLIC_USDC_DECIMALS,
@@ -37,7 +37,7 @@ export function readLiveEnv(): { ok: true; env: LiveEnv } | { ok: false; missing
       explorerUrl: process.env.NEXT_PUBLIC_EXPLORER_URL || null,
       apiUrl: raw.NEXT_PUBLIC_API_URL!.replace(/\/$/, ""),
       streamUrl: raw.NEXT_PUBLIC_STREAM_URL!,
-      envioUrl: raw.NEXT_PUBLIC_ENVIO_GRAPHQL_URL!,
+      envioUrl: process.env.NEXT_PUBLIC_ENVIO_GRAPHQL_URL || null,
       vault: raw.NEXT_PUBLIC_VAULT_ADDRESS as Address,
       usdc: raw.NEXT_PUBLIC_USDC_ADDRESS as Address,
       usdcDecimals: Number(raw.NEXT_PUBLIC_USDC_DECIMALS),

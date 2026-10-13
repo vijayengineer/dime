@@ -150,8 +150,11 @@ export function AccountSheet({ open, onClose }: { open: boolean; onClose: () => 
                 <label htmlFor="amt">Amount (USDC)</label>
                 <input id="amt" className="input" inputMode="decimal" value={amt} onChange={(e) => setAmt(e.target.value)} />
               </div>
+              {b.allowlisted === false && (
+                <p className="warn-box">Deposits are open to allow-listed wallets only during commissioning. This wallet isn&apos;t on the list yet. Withdrawals always work.</p>
+              )}
               <div className="sides" style={{ marginTop: 12 }}>
-                <button className="btn primary" disabled={busy || room <= 0n} onClick={() => run("deposit")}>Deposit</button>
+                <button className="btn primary" disabled={busy || room <= 0n || b.allowlisted === false} onClick={() => run("deposit")}>Deposit</button>
                 <button className="btn" disabled={busy || b.free === 0n} onClick={() => run("withdraw")}>Withdraw</button>
               </div>
               {room <= 0n && <p className="note">You have reached the deposit cap.</p>}

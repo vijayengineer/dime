@@ -34,6 +34,8 @@ export interface Balances {
   /** Cumulative external deposits counted against the funding cap. */
   depositedTotal: bigint;
   fundingCap: bigint;
+  /** False when an on-chain allow-list is on and this wallet is not on it (live mode only). */
+  allowlisted?: boolean;
   provenance: Provenance;
   block?: bigint;
 }

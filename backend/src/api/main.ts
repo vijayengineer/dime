@@ -128,7 +128,8 @@ const envio = cfg.ENVIO_API_TOKEN
   ? new EnvioIndexer(cfg.ENVIO_API_TOKEN, cfg.CHAIN_ID, {
       DimeProtocol: cfg.manifest.protocol, PriceVerifier: cfg.manifest.verifier,
       ...(cfg.manifest.dimeToken ? { DimeToken: cfg.manifest.dimeToken as Address } : {}),
-    }, BigInt(cfg.manifest.deploymentBlock), () => c.pub.getBlockNumber())
+    }, BigInt(cfg.manifest.deploymentBlock), () => c.pub.getBlockNumber(),
+    async (n) => Number((await c.pub.getBlock({ blockNumber: n })).timestamp) * 1000)
   : null;
 envio?.start();
 if (!envio) log.warn("ENVIO_API_TOKEN not set: /v1/indexer disabled");
@@ -332,6 +333,12 @@ app.post("/v1/close", { preHandler: authenticate }, async (req, reply) => {
 });
 
 app.get("/v1/indexer", async (_q, reply) => (envio ? json(reply, 200, envio.view()) : json(reply, 503, err("INDEXER_DISABLED", "Indexer not configured"))));
+app.get("/v1/activity/:address", async (req, reply) => {
+  const { address } = req.params as { address: string };
+  if (!/^0x[0-9a-fA-F]{40}$/.test(address)) return json(reply, 400, err("BAD_ADDRESS", "Expected a 0x address"));
+  if (!envio) return json(reply, 503, err("INDEXER_DISABLED", "Indexer not configured"));
+  return json(reply, 200, { indexedBlock: envio.view(1).indexedBlock, items: envio.activity(address) });
+});
 
 /* ---------------------------------------------------------------- metrics */
 app.get("/v1/metrics", async (_q, reply) => {

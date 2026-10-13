@@ -61,6 +61,7 @@ export function OrderTicket({
   const free = balances?.free ?? 0n;
   const blockers: string[] = [];
   if (!signedIn) blockers.push("Sign in to trade.");
+  else if (balances?.allowlisted === false) blockers.push("Trading is open to allow-listed wallets only during commissioning. This wallet isn't on the list yet.");
   else if (free < margin) blockers.push(`You need ${usd(margin)} free. Fund your account first.`);
   if (state !== "OPEN") blockers.push(`Protocol is ${state.replace("_", " ")}: new positions are paused.`);
   if (!priceOk) blockers.push("Price checks are failing, so new positions are paused.");
