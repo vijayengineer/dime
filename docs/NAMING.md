@@ -87,3 +87,10 @@ dime-sized."
   max loss = your dime visible next to any leverage claim.
 - Still UNCHECKED: domains, handles, trademark (e.g. Dime Community Bank, other "Dime"
   fintechs), Monad Foundation's view on "Monad" in the expansion, and the EIP-712 domain name.
+
+## Update (2026-10-13): expansion
+
+- **DIME = Degen Intelligence Monad Exchange** (user decision; replaces the earlier expansions everywhere
+  in the app via `brand.expansion`).
+- Note: "Exchange" can read as a regulated or licensed venue in some jurisdictions. Fine for the
+  hackathon. Review it with counsel before any public launch.

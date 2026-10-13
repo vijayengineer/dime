@@ -36,8 +36,17 @@ contract Deploy is Script, IDimeTypes {
         address guardian = vm.envAddress("DIME_GUARDIAN");
         address reporter = vm.envAddress("DIME_REPORTER");
 
-        vm.startBroadcast();
-        address deployer = msg.sender;
+        // Signer: DEPLOYER_PK from the environment (set by scripts/deploy.sh from a root-only key file,
+        // never a command-line argument), or the CLI-configured signer (keystore / hardware wallet).
+        uint256 pk = vm.envOr("DEPLOYER_PK", uint256(0));
+        address deployer;
+        if (pk != 0) {
+            vm.startBroadcast(pk);
+            deployer = vm.addr(pk);
+        } else {
+            vm.startBroadcast();
+            deployer = msg.sender;
+        }
 
         IERC20 collateral;
         bool testToken;
@@ -58,7 +67,12 @@ contract Deploy is Script, IDimeTypes {
 
         dime.grantRole(dime.RELAYER_ROLE(), relayer);
         dime.grantRole(dime.GUARDIAN_ROLE(), guardian);
-        if (isCommissioning) dime.setAllowlistEnabled(true);
+        if (isCommissioning) {
+            dime.setAllowlistEnabled(true);
+            // Founder / consenting tester wallets allowed to deposit and trade during commissioning.
+            address[] memory allow = vm.envOr("DIME_ALLOWLIST", ",", new address[](0));
+            if (allow.length > 0) dime.setAllowlisted(allow, true);
+        }
 
         // Hand admin to the final admin; the deployer keeps nothing.
         if (admin != deployer) {

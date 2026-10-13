@@ -1,4 +1,4 @@
-# DIME — Directional Isolated Monad Exposure
+# DIME — Degen Intelligence Monad Exchange
 
 Small-ticket BTC trading on Monad, by RNDM: two execution routes (peer-matched and house-backed),
 a transparent house reserve, and non-transferable earnings rights. "Not paper. Real trades, dime-sized."

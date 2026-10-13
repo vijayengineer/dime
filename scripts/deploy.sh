@@ -9,25 +9,40 @@
 set -euo pipefail
 : "${DIME_STAGE:?}" "${RPC_URL:?}" "${DIME_ADMIN:?}" "${DIME_RELAYER:?}" "${DIME_GUARDIAN:?}" "${DIME_REPORTER:?}"
 ACCOUNT="${DEPLOYER_ACCOUNT:-dime-deployer}"
+# Signer: a Foundry keystore account (default), or DEPLOYER_KEY_FILE (root-only file on the server).
+# With a key file the key is passed to forge via the environment (DEPLOYER_PK), read inside the
+# script — never as a command-line argument (which other local users could see in the process list).
+SIGNER=()
+if [ -n "${DEPLOYER_KEY_FILE:-}" ]; then
+  DEPLOYER_PK="$(tr -d '[:space:]' < "$DEPLOYER_KEY_FILE")"; export DEPLOYER_PK
+else
+  SIGNER=(--account "$ACCOUNT")
+fi
 CHAIN=$(cast chain-id --rpc-url "$RPC_URL")
 case "$DIME_STAGE:$CHAIN" in
   testnet:10143|testnet:31337|commissioning:143|commissioning:10143) ;;
   *) echo "refusing: stage $DIME_STAGE on chain $CHAIN"; exit 1 ;;
 esac
+
 if [ "$DIME_STAGE" = "commissioning" ]; then
   : "${DIME_COLLATERAL:?commissioning requires the canonical USDC address}"
   SYM=$(cast call "$DIME_COLLATERAL" "symbol()(string)" --rpc-url "$RPC_URL"); DEC=$(cast call "$DIME_COLLATERAL" "decimals()(uint8)" --rpc-url "$RPC_URL")
-  echo "collateral $DIME_COLLATERAL symbol=$SYM decimals=$DEC — confirm this is the canonical USDC for chain $CHAIN"; read -r -p "type YES to continue: " ok; [ "$ok" = "YES" ]
+  echo "collateral $DIME_COLLATERAL symbol=$SYM decimals=$DEC — confirm this is the canonical USDC for chain $CHAIN"
+  if [ "${DIME_CONFIRM_COLLATERAL:-}" != "$DIME_COLLATERAL" ]; then read -r -p "type YES to continue: " ok; [ "$ok" = "YES" ]; fi
+  [ "$DEC" = "6" ] || { echo "collateral must have 6 decimals"; exit 1; }
 fi
 
 forge build
-forge script contracts/script/Deploy.s.sol --rpc-url "$RPC_URL" --account "$ACCOUNT" --broadcast --slow
+# Monad allows 128 KB contracts (DimeProtocol is ~30 KB); Foundry simulates with the 24 KB EIP-170 limit by default.
+forge script contracts/script/Deploy.s.sol --rpc-url "$RPC_URL" ${SIGNER[@]+"${SIGNER[@]}"} --broadcast --slow --disable-code-size-limit
+unset DEPLOYER_PK
 node scripts/finalize-manifest.mjs "$CHAIN"
 node scripts/export-abis.mjs
 node scripts/envio-config.mjs "deployments/$CHAIN.json"
 
-if [ "$CHAIN" != "31337" ]; then
+if [ "$CHAIN" != "31337" ] && [ -z "${DIME_SKIP_VERIFY:-}" ]; then
   M="deployments/$CHAIN.json"
+  command -v jq >/dev/null || { echo "jq required for verification"; exit 1; }
   LIBS="--libraries contracts/src/lib/DimeMath.sol:DimeMath:$(jq -r .libraries.DimeMath $M) --libraries contracts/src/lib/DimeRights.sol:DimeRights:$(jq -r .libraries.DimeRights $M)"
   V="--chain $CHAIN --verifier sourcify --verifier-url https://sourcify-api-monad.blockvision.org/"
   forge verify-contract "$(jq -r .libraries.DimeMath $M)" contracts/src/lib/DimeMath.sol:DimeMath $V || true

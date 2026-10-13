@@ -6,8 +6,7 @@
 export const brand = {
   name: "DIME",
   /** Formal expansion for docs/footer; the playful one is for marketing only. */
-  expansion: "Directional Isolated Monad Exposure",
-  playfulExpansion: "Degens Inside Monad Exposure",
+  expansion: "Degen Intelligence Monad Exchange",
   tagline: "Not paper. Real trades, dime-sized.",
   /** Non-transferable earnings rights issued on eligible house-trade losses. */
   rightsName: "DIME rights",

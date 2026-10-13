@@ -1,6 +1,6 @@
 # Brief: DIME backend and smart contracts
 
-DIME (Directional Isolated Monad Exposure) is RNDM's small-ticket BTC trading product
+DIME (Degen Intelligence Monad Exchange) is RNDM's small-ticket BTC trading product
 on Monad. This brief covers the backend and the contracts. The frontend already exists
 in this repository; see README.md, docs/CONTRACTS.md, docs/API.md and docs/STATUS.md.
 
