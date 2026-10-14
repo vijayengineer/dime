@@ -47,7 +47,7 @@ const RISKS: [string, string, ReactNode][] = [
   ["Leverage", "At 1000×, a move of about 0.09% against you liquidates the position and you lose your whole margin. It can happen within seconds.", "Your margin is your maximum loss on each trade (isolated margin). The liquidation price is shown before you sign."],
   ["The price", "Prices are signed by DIME's own pricing service. A wrong or delayed price could open, close or liquidate at the wrong level.", "Six exchanges, liquidity-weighted, stale and outlying quotes dropped; every signature checked on-chain; every price published with its inputs; new trades pause if the feed degrades. It is not yet an independent oracle."],
   ["Smart contracts", "The contracts are new, unaudited hackathon code. A bug could lose deposited funds.", "Source verified on MonadVision; deposits capped at $1 per wallet during the test."],
-  ["The house", "The house reserve is small. It may close a position early if your gain nears what it reserved for you, and it can be full.", "It reserves 20× your margin per trade and only offers sizes it can cover. Its reserve and results are on the House page."],
+  ["The house", "The house reserve is small. It may close a position early if your gain nears what it reserved for you, and it can be full.", "Every trade is capped at $100 of BTC; the house reserves 5× your margin per trade and only offers sizes it can cover. Its reserve and results are on the House page."],
   ["Operator control", "The admin can change settings and pause trading. DIME's relayer submits trades and the keeper liquidates.", "Each order is signed against a specific settings version. The guardian can only reduce risk; reopening needs the admin."],
   ["Outages", "If DIME's servers or Monad are down, you may be unable to open or close a position in the app.", "Funds stay in the contract, and your free balance can be withdrawn straight from your wallet."],
   ["DIME", "DIME may earn nothing, and new issuance dilutes existing holders. It is not a refund and has no guaranteed value.", "Issuance is capped per epoch; payouts only come from new house earnings after earlier house losses are recovered."],
@@ -86,7 +86,7 @@ export default function DocsPage() {
             <p><strong>In 30 seconds</strong></p>
             <ul>
               <li><strong>Pick a side.</strong> Long if you think BTC goes up, Short if you think it goes down.</li>
-              <li><strong>Pick a size.</strong> A margin from $0.10 and a leverage up to 1000×. Your margin is the most you can lose.</li>
+              <li><strong>Pick a size.</strong> A margin from $0.10 to $1 and a leverage up to 1000×. Every trade is capped at $100 of BTC, so bigger margins get less leverage. Your margin is the most you can lose.</li>
               <li><strong>Sign once.</strong> The house takes the other side instantly. DIME pays the gas.</li>
               <li><strong>Close any time</strong> at the verified price. If you lose against the house, you earn DIME.</li>
             </ul>
@@ -118,8 +118,9 @@ export default function DocsPage() {
             <h2>How a trade works</h2>
             <ul>
               <li><strong>Margin</strong> is what you put in and the most you can lose. <strong>Leverage</strong> multiplies it into your position size: $0.10 at 1000× is $100 of BTC.</li>
+              <li><strong>$100 exposure cap.</strong> No trade can be bigger than $100 of BTC, so leverage depends on margin: 1000× at $0.10, 400× at $0.25, 200× at $0.50, 100× at $1.</li>
               <li><strong>Liquidation.</strong> If the price moves against you by about 90% ÷ leverage (about 0.09% at 1000×), the position closes and the margin goes to the house.</li>
-              <li><strong>The house</strong> takes the other side of every trade, instantly. For each trade it sets aside 20× your margin to cover your winnings, so the largest margin on offer depends on how much of its reserve is free.</li>
+              <li><strong>The house</strong> takes the other side of every trade, instantly. For each trade it sets aside 5× your margin to cover your winnings, so the largest margin on offer depends on how much of its reserve is free.</li>
               <li><strong>Fee.</strong> 25% of the profit on a winning trade. Losing or flat trades pay no fee, and DIME pays the gas for opening and closing.</li>
               <li><strong>Price tolerance.</strong> Set for you and shown before you sign. If the price moves past it before your trade lands, nothing opens and your margin stays free.</li>
               <li>Your free balance can always be withdrawn back to your wallet.</li>
@@ -163,7 +164,7 @@ export default function DocsPage() {
             <h2>Live-test limits</h2>
             <ul>
               <li>Invite-only, up to 20 wallets.</li>
-              <li>Deposits up to $1 per wallet. Margin $0.10–$0.50. Leverage up to 1000×.</li>
+              <li>Deposits up to $1 per wallet. Margin $0.10–$1. Leverage up to 1000×, with every trade capped at $100 of BTC.</li>
               <li>The house reserve is small: it takes up to three trades at a time, and the largest margin depends on its free reserve.</li>
             </ul>
           </section>

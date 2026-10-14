@@ -6,6 +6,7 @@ import { parseUnits } from "@/domain/fixed";
 import { exampleNetProfit, notionalOf } from "@/domain/math";
 import type { Balances, OrderDraft, ProtocolState, Quote, Side } from "@/domain/types";
 import { record } from "@/state/metrics";
+import { maxLeverageFor } from "@shared/execution";
 import { useApp } from "@/state/app";
 import { useServices } from "@/state/services";
 import { useAccess } from "../AccessGate";
@@ -50,6 +51,9 @@ export function OrderTicket({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [houseMax]);
   const houseFull = houseMax !== null && houseMax < params.minMargin;
+  // $100 exposure cap: bigger margins get less leverage ($0.10 → 1000×, $1 → 100×).
+  const levCap = maxLeverageFor(margin, params.maxLeverage);
+  useEffect(() => { if (leverage > levCap) setLeverage(levCap); }, [levCap, leverage]);
 
   // Route, match window and price tolerance are auto-selected by the backend (shared/execution.ts)
   // and returned in the quote; the user authorises them on the review sheet.
@@ -89,7 +93,7 @@ export function OrderTicket({
   if (state !== "OPEN") blockers.push(`Protocol is ${state.replace("_", " ")}: new positions are paused.`);
   if (!priceOk) blockers.push("Price checks are failing, so new positions are paused.");
 
-  const logLev = Math.log(leverage) / Math.log(params.maxLeverage);
+  const logLev = Math.log(leverage) / Math.log(Math.max(2, levCap));
 
   return (
     <section className="card" aria-labelledby="ticket-title">
@@ -122,15 +126,18 @@ export function OrderTicket({
           id="lev" type="range" min={0} max={1000} step={1} value={Math.round(logLev * 1000)}
           aria-valuetext={`${leverage} times`}
           onChange={(e) => {
-            const v = Math.round(Math.pow(params.maxLeverage, Number(e.target.value) / 1000));
-            setLeverage(Math.min(params.maxLeverage, Math.max(1, v)));
+            const v = Math.round(Math.pow(Math.max(2, levCap), Number(e.target.value) / 1000));
+            setLeverage(Math.min(levCap, Math.max(1, v)));
           }}
         />
         <div className="chips" role="group" aria-label="Leverage presets">
-          {LEVERAGE_CHIPS.filter((l) => l <= params.maxLeverage).map((l) => (
+          {[...LEVERAGE_CHIPS.filter((l) => l < levCap), levCap].map((l) => (
             <button key={l} className="chip" aria-pressed={leverage === l} onClick={() => setLeverage(l)}>{l}×</button>
           ))}
         </div>
+        {levCap < params.maxLeverage && (
+          <p className="note" style={{ margin: "6px 0 0" }}>Up to {levCap}× at {usd(margin)}: every trade is capped at $100 of BTC.</p>
+        )}
       </div>
 
       <div className="chalk-rule" />

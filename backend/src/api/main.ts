@@ -18,7 +18,7 @@ import { EventWatcher, type SettlementWire } from "../chain/events";
 import { Matcher } from "../matching/matcher";
 import { EnvioIndexer } from "../indexer/envio";
 import { GasFaucet } from "../faucet/faucet";
-import { autoExecution } from "../../../shared/execution";
+import { autoExecution, maxLeverageFor } from "../../../shared/execution";
 import { TERMS_VERSION, termsMessage } from "../../../shared/terms";
 
 /* ================================================================ wiring */
@@ -208,6 +208,7 @@ app.post("/v1/quotes", { preHandler: authenticate, config: { rateLimit: { max: 1
   const coll = BigInt(d.data.collateral);
   if (coll < k.minCollateral || coll > k.maxCollateral) return json(reply, 400, err("BAD_SIZE", "Margin outside allowed range"));
   if (d.data.leverage > k.maxLeverage) return json(reply, 400, err("BAD_SIZE", "Leverage above maximum"));
+  if (d.data.leverage > maxLeverageFor(coll, k.maxLeverage)) return json(reply, 400, err("BAD_SIZE", `Max ${maxLeverageFor(coll, k.maxLeverage)}× at this margin ($100 exposure cap)`));
   const isLong = d.data.side === "LONG";
   const houseCheckReason = (() => {
     const res = coll * BigInt(k.houseReservationMultiple);
@@ -276,6 +277,7 @@ app.post("/v1/intents", { preHandler: authenticate, config: { rateLimit: { max: 
   const nowS = Math.floor(Date.now() / 1000);
   if (Number(m.expiry) <= nowS) return json(reply, 409, err("EXPIRED", "Request already expired"));
   if (m.routeMask === 0 || m.routeMask > 3) return json(reply, 400, err("BAD_ROUTE", "Choose at least one route"));
+  if (m.leverage > maxLeverageFor(m.collateral, chainState.config.maxLeverage)) return json(reply, 400, err("BAD_SIZE", "Above the $100 exposure cap: lower the leverage"));
   if (store.liveIntentForUser(m.user)) return json(reply, 409, err("PENDING", "A request is already pending"));
   if (store.intentByNonce(m.user, m.nonce.toString())) return json(reply, 409, err("NONCE_USED", "Nonce already used"));
   const user = m.user.toLowerCase();

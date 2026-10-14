@@ -24,6 +24,16 @@ export interface AutoExecution {
 
 export const AUTO_WINDOW_MATCH_ONLY_MS = 8000;
 
+/**
+ * Exposure cap: margin × leverage never exceeds $100 (USDC, 6 decimals). Bigger margins get less leverage
+ * ($0.10 → 1000×, $1 → 100×), so every position has the same worst-case size and the house can reserve less per trade.
+ */
+export const MAX_NOTIONAL = 100_000_000n;
+export function maxLeverageFor(collateral: bigint, protocolMax: number): number {
+  if (collateral <= 0n) return protocolMax;
+  return Math.max(1, Math.min(protocolMax, Number(MAX_NOTIONAL / collateral)));
+}
+
 export function autoExecution(i: AutoExecutionInput): AutoExecution {
   const liqBps = Math.floor((10_000 - i.maintenanceBps) / i.leverage);
   const slippageBps = Math.max(1, Math.min(10, Math.floor(liqBps / 4)));
