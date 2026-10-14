@@ -46,7 +46,7 @@ const CLOSE_TYPES = { CloseRequest: [
   { name: "user", type: "address" }, { name: "positionId", type: "bytes32" }, { name: "requestedAtMs", type: "uint64" },
   { name: "expiry", type: "uint64" }, { name: "nonce", type: "uint256" },
 ] } as const;
-const DIME_PER_LOSS_OF_10C = 100n * 10n ** 18n; // 1,000 DIME per $1 (deploy default) × $0.10
+const DIME_PER_LOSS_OF_10C = 10n ** 18n; // 10 DIME per $1 (deploy default) × $0.10 = 1 DIME
 
 const results: { name: string; ok: boolean; detail?: string }[] = [];
 const procs: ChildProcess[] = [];
@@ -198,7 +198,7 @@ async function main() {
   }
   check("keeper liquidated after −0.3% shock", liquidated === true);
   const rights = await pub.readContract({ ...dime, functionName: "rightsOf", args: [alice] });
-  check("house loss issued pending DIME (100 for $0.10)", rights.pending === DIME_PER_LOSS_OF_10C, rights.pending.toString());
+  check("house loss issued pending DIME (1 for $0.10)", rights.pending === DIME_PER_LOSS_OF_10C, rights.pending.toString());
   await fetch(`${PRICING}/mock/shock?bps=30`, { method: "POST" });
 
   // 6. stale reference → quotes refused

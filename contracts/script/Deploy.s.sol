@@ -104,10 +104,10 @@ contract Deploy is Script, IDimeTypes {
         c.maxConcurrentHousePositions = uint16(vm.envOr("DIME_HOUSE_SLOTS", uint256(commissioning ? 4 : 10)));
         c.maxConcurrentMatchedPairs = commissioning ? 5 : 25;
         c.matchedGapBackstop = 0;
-        c.dimePerUsdE18 = 1000e18; // 1,000 DIME per $1 of eligible loss (live setting since config v2; UNVALIDATED)
+        c.dimePerUsdE18 = 10e18; // 10 DIME per $1 of eligible loss (live setting since config v4; UNVALIDATED)
         c.emissionDecayTvl = uint128(vm.envOr("DIME_EMISSION_DECAY_TVL", uint256(1_000_000e6))); // $1M house reserve
-        c.minStake = uint128(vm.envOr("DIME_MIN_STAKE", uint256(100e18))); // 100 DIME (UNVALIDATED)
-        c.maxMintPerEpoch = uint128(vm.envOr("DIME_MAX_MINT_PER_EPOCH", uint256(100_000e18)));
+        c.minStake = uint128(vm.envOr("DIME_MIN_STAKE", uint256(1e18))); // 1 DIME (UNVALIDATED)
+        c.maxMintPerEpoch = uint128(vm.envOr("DIME_MAX_MINT_PER_EPOCH", uint256(1_000e18)));
         c.distributionShareBps = 2000;
         c.distributionReserveFloor = 10e6;
         c.epochSeconds = uint64(vm.envOr("DIME_EPOCH_SECONDS", uint256(commissioning ? 86400 : 3600)));

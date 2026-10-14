@@ -141,7 +141,7 @@ export default function DocsPage() {
           <section id="dime">
             <h2>DIME and staking</h2>
             <ul>
-              <li>A trade that loses against the house earns <strong>DIME</strong>, an on-chain token, on net losses only. While the house is small, each $1 lost earns 1,000 DIME, and issuance is capped each daily epoch.</li>
+              <li>A trade that loses against the house earns <strong>DIME</strong>, an on-chain token, on net losses only. While the house is small, each $1 lost earns 10 DIME, and issuance is capped each daily epoch.</li>
               <li>Earned DIME is staked for you and held by the protocol contract, so it doesn&apos;t show in your wallet. See it on <Link href="/house">The House</Link>.</li>
               <li>Staked DIME starts earning at the next epoch. It shares part of new house earnings, paid in USDC, once earlier house losses are recovered. Some epochs pay nothing.</li>
               <li>DIME can&apos;t be transferred until a publicly scheduled date. It is not a refund and has no guaranteed value.</li>
