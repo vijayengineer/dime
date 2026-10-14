@@ -34,7 +34,9 @@ export function IntentCard({ intent, onDismiss }: { intent: IntentState; onDismi
           </p>
         </div>
       </div>
-      {bad && intent.reason && <p className="warn-box" style={{ marginBottom: 0 }}>{intent.reason}</p>}
+      {intent.status === "CAPACITY_UNAVAILABLE" || intent.status === "EXPIRED"
+        ? <p className="note" style={{ marginBottom: 0 }}>Nothing opened, so your margin is still free. Try again, or pick a smaller margin.</p>
+        : bad && intent.reason && <p className="warn-box" style={{ marginBottom: 0 }}>{intent.reason}</p>}
       {terminal && <button className="btn small" style={{ marginTop: 10 }} onClick={onDismiss}>Dismiss</button>}
     </section>
   );

@@ -17,3 +17,8 @@ deploy/
 out/
 deployments/31337.json
 foundry.toml
+dime-teaser/
+*.mp4
+*.mov
+submission-fields.md
+!public/media/*.mp4

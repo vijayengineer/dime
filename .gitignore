@@ -30,3 +30,9 @@ cache/
 # videos (teasers, demos) stay local
 *.mp4
 *.mov
+
+# teaser project (footage, renders, reference source) stays local
+dime-teaser/
+submission-fields.md
+video-descriptions.md
+!public/media/*.mp4

@@ -6,6 +6,7 @@ import { parseUnits } from "@/domain/fixed";
 import { exampleNetProfit, notionalOf } from "@/domain/math";
 import type { Balances, OrderDraft, ProtocolState, Quote, Side } from "@/domain/types";
 import { record } from "@/state/metrics";
+import { useApp } from "@/state/app";
 import { useServices } from "@/state/services";
 import { useAccess } from "../AccessGate";
 import { pct, price, usd } from "../format";
@@ -25,12 +26,30 @@ export function OrderTicket({
     () => ["0.10", "0.25", "0.50", "1.00"].map((x) => parseUnits(x, params.collateralDecimals)).filter((x) => x >= params.minMargin && x <= params.maxMargin),
     [params],
   );
+  const { house } = useApp();
+  // House first: a house trade reserves houseReservationMultiple × margin, so the largest margin the house can take
+  // right now is its free capacity / that multiple (and only while a house slot is open). Bigger sizes aren't offered.
+  const houseMax = useMemo(() => {
+    if (house.status !== "ok") return null;
+    const h = house.value;
+    if (h.openHousePositions >= params.maxConcurrentHousePositions) return 0n;
+    return h.availableCapacity / BigInt(Math.max(1, params.houseReservationMultiple));
+  }, [house, params.maxConcurrentHousePositions, params.houseReservationMultiple]);
+  const fits = (m: bigint) => houseMax === null || m <= houseMax;
   const [side, setSide] = useState<Side | null>(null);
   const [margin, setMargin] = useState<bigint>(marginChips[0] ?? params.minMargin);
   const [leverage, setLeverage] = useState(100);
   const [quote, setQuote] = useState<Quote | null>(null);
   const [quoteErr, setQuoteErr] = useState<string | null>(null);
   const [reviewing, setReviewing] = useState(false);
+  // Keep the chosen margin inside what the house can take as its capacity moves.
+  useEffect(() => {
+    if (fits(margin)) return;
+    const best = [...marginChips].reverse().find(fits);
+    if (best !== undefined) setMargin(best);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [houseMax]);
+  const houseFull = houseMax !== null && houseMax < params.minMargin;
 
   // Route, match window and price tolerance are auto-selected by the backend (shared/execution.ts)
   // and returned in the quote; the user authorises them on the review sheet.
@@ -38,10 +57,10 @@ export function OrderTicket({
     side, collateral: margin, leverage, routes: { matched: true, houseFallback: true }, matchWindowMs: 0, slippageBps: 0,
   } : null;
 
-  // Debounced indicative quote; refresh every 5s while a side is chosen.
-  const key = draft ? `${side}|${margin}|${leverage}` : "";
+  // Debounced indicative quote; refresh every 5s while a side is chosen. Quotes need a session, so none while signed out.
+  const key = draft && signedIn ? `${side}|${margin}|${leverage}` : "";
   useEffect(() => {
-    if (!draft) { setQuote(null); onPreview(null); return; }
+    if (!draft || !signedIn) { setQuote(null); setQuoteErr(null); onPreview(null); return; }
     let cancelled = false;
     const get = async () => {
       try {
@@ -65,6 +84,8 @@ export function OrderTicket({
   if (!signedIn) blockers.push("Sign in to trade.");
   else if (!access.canTrade) blockers.push("Join the live test (invite code + terms) to trade.");
   else if (free < margin) blockers.push(`You need ${usd(margin)} free. Fund your account first.`);
+  if (houseFull) blockers.push("The house is full right now. New trades open again as positions close.");
+  else if (quote && !quote.capacity.houseAvailable) blockers.push("The house can't take this trade right now. Try a smaller margin or the other side.");
   if (state !== "OPEN") blockers.push(`Protocol is ${state.replace("_", " ")}: new positions are paused.`);
   if (!priceOk) blockers.push("Price checks are failing, so new positions are paused.");
 
@@ -87,9 +108,12 @@ export function OrderTicket({
         <span className="label" id="margin-l"><span>Margin</span><span className="num muted">free {usd(free)}</span></span>
         <div className="chips" role="group" aria-labelledby="margin-l">
           {marginChips.map((m) => (
-            <button key={m.toString()} className="chip" aria-pressed={margin === m} onClick={() => setMargin(m)}>{usd(m)}</button>
+            <button key={m.toString()} className="chip" aria-pressed={margin === m} disabled={!fits(m)} onClick={() => setMargin(m)}>{usd(m)}</button>
           ))}
         </div>
+        {houseMax !== null && !houseFull && marginChips.some((m) => !fits(m)) && (
+          <p className="note" style={{ margin: "6px 0 0" }}>The house can take up to {usd(houseMax)} margin right now.</p>
+        )}
       </div>
 
       <div className="field">
@@ -127,11 +151,10 @@ export function OrderTicket({
       <details className="explain">
         <summary>How execution works</summary>
         <ul>
-          <li><strong>Matched:</strong> another trader takes the opposite side at the same verified price. Your profit comes from their margin, so it cannot exceed their margin{params.matchedGapBackstop > 0n ? ` plus a ${usd(params.matchedGapBackstop)} house backstop` : ""}. If either of you closes, both positions settle.</li>
-          <li><strong>House:</strong> the house reserve is your counterparty. There is no fixed profit ceiling, but the house reserves {params.houseReservationMultiple}× your margin for you and may close the position early if your gain nears that and more cannot be reserved.</li>
-          <li>Requests are whole-ticket: no partial fills, no splitting, never matched against your own wallet. Address checks cannot prevent coordinated multi-wallet trading.</li>
-          <li>A pending request is not a position. If nothing opens before the window ends, it expires and your margin is free again.</li>
-          <li>Execution is automatic: route, match window and price tolerance are chosen for you (tolerance stays inside ¼ of the liquidation distance) and shown before you sign.</li>
+          <li><strong>The house fills you instantly.</strong> The house reserve takes the other side at the verified price as soon as you sign.</li>
+          <li>For each trade the house sets aside {params.houseReservationMultiple}× your margin to cover your winnings, so the biggest margin on offer depends on how much of the reserve is free. It may close a position early if your gain nears that amount.</li>
+          <li>Your margin is the most you can lose. Whole tickets only: no partial fills.</li>
+          <li>Price tolerance is set for you (inside ¼ of the liquidation distance) and shown before you sign. If the price moves past it, nothing opens and your margin stays free.</li>
         </ul>
       </details>
 
@@ -158,15 +181,15 @@ export function OrderTicket({
 
 function CapacityLine({ quote, err }: { quote: Quote | null; err: string | null }) {
   if (err) return <p className="err-box" style={{ marginTop: 12 }} role="alert">Quote unavailable: {err}</p>;
-  if (!quote) return null;
+  // Only the instant house fill is offered here; when the house can't take a trade the blockers say so.
+  if (!quote || !quote.capacity.houseAvailable) return null;
   return (
     <div className="route" style={{ marginTop: 12 }}>
       <Icon.match />
       <div style={{ flex: 1 }}>
-        <div><strong>Auto execution</strong></div>
-        <div className="dim">{quote.executionSummary ?? "Matched first, then the house."}</div>
+        <div><strong>Instant fill</strong></div>
+        <div className="dim">The house takes the other side straight away.</div>
       </div>
-      <Prov p="ESTIMATE" />
     </div>
   );
 }

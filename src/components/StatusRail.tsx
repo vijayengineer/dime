@@ -11,8 +11,8 @@ export const INTENT_COPY: Record<IntentStatus, string> = {
   MATCHING: "Opening your position…",
   SUBMITTED: "Opening your position…",
   OPENED: "Position opened",
-  CAPACITY_UNAVAILABLE: "Not opened",
-  EXPIRED: "Not opened",
+  CAPACITY_UNAVAILABLE: "Not opened: the house was full",
+  EXPIRED: "Not opened: timed out",
   REJECTED: "Rejected",
   CANCELLED: "Cancelled",
 };
