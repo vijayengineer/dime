@@ -5,7 +5,7 @@ a transparent house reserve, and non-transferable earnings rights. "Not paper. R
 (Name provisional — see docs/NAMING.md; earlier working names CHALK and FLIP.)
 
 > **Status:** contracts, backend and indexer are built and tested locally (local chain end to end).
-> Nothing is deployed to Monad yet. The frontend defaults to labelled demo mode. See [docs/STATUS.md](docs/STATUS.md).
+> Live on Monad mainnet (invite-only, real USDC) at https://dime.rndm.io. Contract addresses: [docs/DEPLOYMENTS.md](docs/DEPLOYMENTS.md); live settings are block-stamped at `/v1/manifest`. October 2026 audit response: [docs/AUDIT-REMEDIATION.md](docs/AUDIT-REMEDIATION.md).
 
 ```bash
 npm install && npm run dev          # frontend, demo mode: http://localhost:3000

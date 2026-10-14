@@ -20,13 +20,13 @@ describe("demo engine end-to-end", () => {
   afterEach(() => { e.stop(); vi.useRealTimers(); });
 
   it("house trade → liquidation → rights → activation → funded distribution → claim", async () => {
-    e.setScenario({ counterparty: "none" }); // auto-execution: no match in window → house fallback
+    e.setScenario({ counterparty: "none" }); // auto-execution: the house takes it straight away
     await run(e.deposit(usd(2)));
     expect(val<{ free: bigint }>(e.balancesFeed).free).toBe(usd(2));
 
     const reserveBefore = val<{ reserve: bigint }>(e.houseFeed).reserve;
     const q = await run(e.quote(draft()), 300);
-    expect(q.draft.routes).toEqual({ matched: true, houseFallback: true }); // auto-selected
+    expect(q.draft.routes).toEqual({ matched: false, houseFallback: true }); // house-first, auto-selected
     await run(e.submit(q), 5000);
     expect(val<{ status: string }>(e.intentFeed).status).toBe("OPENED");
     expect(val<{ route: string } | null>(e.positionFeed)?.route).toBe("HOUSE");
@@ -60,6 +60,7 @@ describe("demo engine end-to-end", () => {
   });
 
   it("matched pair: counterparty close settles the user's side; fee goes to house", async () => {
+    e.setScenario({ houseCapacity: "exhausted" }); // matching is the overflow path when the house is full
     await run(e.deposit(usd(2)));
     const q = await run(e.quote(draft({ side: "LONG", routes: { matched: true, houseFallback: false }, matchWindowMs: 5000 })), 300);
     await run(e.submit(q), 4000);

@@ -13,6 +13,7 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { dimeAbi, testUsdcAbi } from "../../shared/abi";
+import { termsMessage } from "../../shared/terms";
 
 const RPC = "http://127.0.0.1:8545";
 const manifest = JSON.parse(fs.readFileSync("../deployments/31337.json", "utf8"));
@@ -41,7 +42,11 @@ const ORDER_TYPES = {
     { name: "expiry", type: "uint64" }, { name: "nonce", type: "uint256" },
   ],
 } as const;
-const CLOSE_TYPES = { CloseRequest: [{ name: "user", type: "address" }, { name: "positionId", type: "bytes32" }, { name: "expiry", type: "uint64" }, { name: "nonce", type: "uint256" }] } as const;
+const CLOSE_TYPES = { CloseRequest: [
+  { name: "user", type: "address" }, { name: "positionId", type: "bytes32" }, { name: "requestedAtMs", type: "uint64" },
+  { name: "expiry", type: "uint64" }, { name: "nonce", type: "uint256" },
+] } as const;
+const DIME_PER_LOSS_OF_10C = 100n * 10n ** 18n; // 1,000 DIME per $1 (deploy default) × $0.10
 
 const results: { name: string; ok: boolean; detail?: string }[] = [];
 const procs: ChildProcess[] = [];
@@ -68,7 +73,8 @@ async function startServices() {
     API_PORT: "8820", KEEPER_PORT: "8830", AUTH_MODE: "none", RATE_LIMIT_PER_MIN: "10000", LOG_LEVEL: "warn",
   };
   for (const s of ["pricing", "api", "keeper"]) {
-    const p = spawn("npx", ["tsx", `src/${s}/main.ts`], { env, stdio: ["ignore", "inherit", "inherit"] });
+    const tsx = ["node_modules/.bin/tsx", "../node_modules/.bin/tsx"].find((f) => fs.existsSync(f)) ?? "tsx";
+    const p = spawn(tsx, [`src/${s}/main.ts`], { env, stdio: ["ignore", "inherit", "inherit"] });
     procs.push(p);
     if (s === "pricing") await sleep(1500);
   }
@@ -85,19 +91,28 @@ async function post(p: string, body: unknown, headers: Record<string, string> = 
 }
 
 let nonceSeq = BigInt(Date.now()) * 1000n;
-async function placeIntent(key: Hex, side: 0 | 1, routeMask: number, windowS = 4, slippageBps = 2) {
+/** Quote → sign → submit, using the server's auto-execution (house first, matching only when the house is full) like the app. */
+async function placeIntent(key: Hex, side: 0 | 1) {
   const { account } = wallet(key);
-  const q = await post("/v1/quotes", { side: side === 0 ? "LONG" : "SHORT", collateral: "100000", leverage: 1000, routes: { matched: !!(routeMask & 1), houseFallback: !!(routeMask & 2) }, matchWindowMs: windowS * 1000, slippageBps });
+  const q = await post("/v1/quotes", { side: side === 0 ? "LONG" : "SHORT", collateral: "100000", leverage: 1000 });
   if (q.status !== 200) throw new Error(`quote failed ${JSON.stringify(q.body)}`);
+  const auto = q.body.auto as { routes: { matched: boolean; houseFallback: boolean }; matchWindowMs: number; slippageBps: number };
+  const routeMask = (auto.routes.matched ? 1 : 0) | (auto.routes.houseFallback ? 2 : 0);
   const now = BigInt(Math.floor(Date.now() / 1000));
   const message = {
     user: account.address, market: keccak256(toHex("BTC-USD")), side, collateral: 100_000n, leverage: 1000, routeMask,
-    matchDeadline: now + BigInt(windowS), priceLimit: BigInt(q.body.priceLimit), configVersion: q.body.configVersion,
+    matchDeadline: now + BigInt(Math.ceil(auto.matchWindowMs / 1000)), priceLimit: BigInt(q.body.priceLimit), configVersion: q.body.configVersion,
     expiry: now + 30n, nonce: ++nonceSeq,
   };
   const signature = await account.signTypedData({ domain, types: ORDER_TYPES, primaryType: "OrderIntent", message });
-  const r = await post("/v1/intents", { quoteId: q.body.id, message, signature, matchWindowMs: windowS * 1000, slippageBps }, { "idempotency-key": `${account.address}:${message.nonce}` });
+  const r = await post("/v1/intents", { quoteId: q.body.id, message, signature, matchWindowMs: auto.matchWindowMs, slippageBps: auto.slippageBps }, { "idempotency-key": `${account.address}:${message.nonce}` });
   return { r, message, signature, account, quote: q.body };
+}
+
+async function acceptTerms(key: Hex) {
+  const { account } = wallet(key);
+  const signature = await account.signMessage({ message: termsMessage(account.address) });
+  return post("/v1/terms", { address: account.address, signature });
 }
 
 async function waitStatus(id: string, want: string[], ms = 15_000) {
@@ -112,10 +127,10 @@ async function waitStatus(id: string, want: string[], ms = 15_000) {
 
 async function main() {
   // --- setup: reserve + user deposits (on-chain, direct)
+  // The house starts EMPTY so the first trades exercise matching (the overflow path); it is funded at step 5.
   const admin = privateKeyToAccount(K.admin).address;
   await send(K.admin, usdc, "mint", [admin, 10_000_000n]);
   await send(K.admin, usdc, "approve", [dime.address, 10_000_000n]);
-  await send(K.admin, dime, "fundReserve", [10_000_000n]);
   for (const k of [K.alice, K.bob]) {
     await send(k, usdc, "faucet");
     await send(k, usdc, "approve", [dime.address, 10_000_000n]);
@@ -124,10 +139,14 @@ async function main() {
   const alice = privateKeyToAccount(K.alice).address, bob = privateKeyToAccount(K.bob).address;
   await startServices();
   await sleep(1500);
+  const t1 = await acceptTerms(K.alice), t2 = await acceptTerms(K.bob);
+  check("terms accepted with wallet signatures", t1.status === 200 && t2.status === 200, `${t1.status}/${t2.status}`);
+  const blocked = await post("/v1/intents", {}, {});
+  check("intents still validated", blocked.status === 400 || blocked.status === 401, String(blocked.status));
 
   // 1. matched pair
-  const a = await placeIntent(K.alice, 0, 1);
-  const b = await placeIntent(K.bob, 1, 1);
+  const a = await placeIntent(K.alice, 0);
+  const b = await placeIntent(K.bob, 1);
   check("intents admitted", a.r.status === 201 && b.r.status === 201, `${a.r.status}/${b.r.status}`);
   const [ao, bo] = await Promise.all([waitStatus(a.r.body.id, ["OPENED", "REJECTED", "EXPIRED"]), waitStatus(b.r.body.id, ["OPENED", "REJECTED", "EXPIRED"])]);
   check("matched pair opened atomically", ao.status === "OPENED" && bo.status === "OPENED" && ao.route === "MATCHED", `${ao.status}/${bo.status} ${ao.reason ?? ""}`);
@@ -143,7 +162,7 @@ async function main() {
 
   // 3. close by alice settles both
   const freeBobBefore = await pub.readContract({ ...dime, functionName: "freeBalance", args: [bob] });
-  const closeMsg = { user: alice, positionId: posA.id, expiry: BigInt(Math.floor(Date.now() / 1000) + 30), nonce: ++nonceSeq };
+  const closeMsg = { user: alice, positionId: posA.id, requestedAtMs: BigInt(Date.now()), expiry: BigInt(Math.floor(Date.now() / 1000) + 30), nonce: ++nonceSeq };
   const closeSig = await a.account.signTypedData({ domain, types: CLOSE_TYPES, primaryType: "CloseRequest", message: closeMsg });
   const cl = await post("/v1/close", { message: closeMsg, signature: closeSig }, { "idempotency-key": `close:${closeMsg.nonce}` });
   check("close relayed", cl.status === 200 && cl.body.status === "INCLUDED", JSON.stringify(cl.body));
@@ -152,15 +171,23 @@ async function main() {
   const freeBobAfter = await pub.readContract({ ...dime, functionName: "freeBalance", args: [bob] });
   check("counterparty leg settled too", pA.collateral === 0n && pB.collateral === 0n && freeBobAfter > freeBobBefore - 1n);
 
-  // 4. match-only with no counterparty expires
-  const e = await placeIntent(K.bob, 0, 1, 3);
+  // 3b. a back-dated close request is refused (it would reach for a historical price round)
+  const old = { ...closeMsg, requestedAtMs: BigInt(Date.now() - 60_000), nonce: ++nonceSeq };
+  const oldSig = await a.account.signTypedData({ domain, types: CLOSE_TYPES, primaryType: "CloseRequest", message: old });
+  const oldR = await post("/v1/close", { message: old, signature: oldSig }, { "idempotency-key": `close:${old.nonce}` });
+  check("back-dated close request refused", oldR.status === 400, String(oldR.status));
+
+  // 4. house empty: match-only with no counterparty expires
+  const e = await placeIntent(K.bob, 0);
   const eo = await waitStatus(e.r.body.id, ["EXPIRED", "OPENED", "REJECTED"], 10_000);
   check("unmatched match-only request expires (not a position)", eo.status === "EXPIRED", eo.status);
 
-  // 5. house fallback after window, then keeper liquidation on a price shock
-  const h = await placeIntent(K.alice, 0, 3, 2);
+  // 5. fund the house: it now takes the other side instantly; then the keeper liquidates on a price shock
+  await send(K.admin, dime, "fundReserve", [10_000_000n]);
+  await sleep(1500); // API chain-state refresh
+  const h = await placeIntent(K.alice, 0);
   const ho = await waitStatus(h.r.body.id, ["OPENED", "REJECTED", "CAPACITY_UNAVAILABLE", "EXPIRED"], 15_000);
-  check("house fallback opened after window", ho.status === "OPENED" && ho.route === "HOUSE", `${ho.status} ${ho.reason ?? ""}`);
+  check("house filled instantly", ho.status === "OPENED" && ho.route === "HOUSE", `${ho.status} ${ho.reason ?? ""}`);
   const housePos = await pub.readContract({ ...dime, functionName: "positionOf", args: [alice] });
   check("house position exists on-chain before shock", housePos.collateral === 100_000n && housePos.route === 1);
   await fetch(`${PRICING}/mock/shock?bps=-30`, { method: "POST" });
@@ -171,7 +198,7 @@ async function main() {
   }
   check("keeper liquidated after −0.3% shock", liquidated === true);
   const rights = await pub.readContract({ ...dime, functionName: "rightsOf", args: [alice] });
-  check("house loss issued pending DIME (0.01 for $0.10)", rights.pending === 10n ** 16n, rights.pending.toString());
+  check("house loss issued pending DIME (100 for $0.10)", rights.pending === DIME_PER_LOSS_OF_10C, rights.pending.toString());
   await fetch(`${PRICING}/mock/shock?bps=30`, { method: "POST" });
 
   // 6. stale reference → quotes refused
@@ -185,7 +212,7 @@ async function main() {
   for (let i = 0; i < 30 && epochAfter === epochBefore; i++) { await sleep(300); epochAfter = await pub.readContract({ ...dime, functionName: "epoch" }); }
   check("keeper funded + advanced epoch", epochAfter === epochBefore + 1n, `${epochBefore} → ${epochAfter}`);
   const rights2 = await pub.readContract({ ...dime, functionName: "rightsOf", args: [alice] });
-  check("DIME stake activated next epoch", rights2.active === 10n ** 16n && rights2.pending === 0n);
+  check("DIME stake activated next epoch", rights2.active === DIME_PER_LOSS_OF_10C && rights2.pending === 0n);
 
   // invariant
   const hs = await pub.readContract({ ...dime, functionName: "houseStats" });

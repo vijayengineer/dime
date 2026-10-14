@@ -1,16 +1,28 @@
 /**
- * Fair-value model v2 — an ESTIMATE. The contract settles against a separately verified reference.
+ * Fair-value model v3 — an ESTIMATE. The contract settles against a separately verified reference.
  *
  *  1. Per venue: microprice = (bid·askSz + ask·bidSz) / (bidSz + askSz). It leans toward the thinner
  *     side, i.e. where the price is about to move. Venues without sizes fall back to the mid.
- *  2. Quote groups (USD spot, USDT spot, USDC perp) are aligned to an anchor group with an EWMA
- *     basis measured whenever both groups are fresh (perp funding / stablecoin basis).
- *  3. Across venues: WEIGHTED MEDIAN. Weight = EWMA top-of-book notional (liquidity proxy)
- *     × freshness (linear decay to 0 at maxAge), capped at `maxWeightShare` per venue. A median
- *     ignores one bad venue; a weighted mean would be dragged by it.
- *  4. Quality: STALE / INSUFFICIENT / CONFLICT flags — never guess.
+ *  2. Freshness is measured from the EXCHANGE's own timestamp where the venue provides one (receipt time
+ *     only for venues that don't), so delayed data is never treated as fresh (audit H-03). Exchange
+ *     timestamps ahead of receipt by more than `maxSkewMs` are rejected as a clock fault.
+ *  3. Ordering: per venue, sequence numbers must strictly increase (and exchange timestamps never go
+ *     back). An older update arriving late on a redundant connection is dropped; a lower sequence is only
+ *     accepted after a reconnect gap (`resetGapMs`) (audit H-03).
+ *  4. Quote groups (USD spot, USDT spot, USDC perp) are aligned to the USD group with a basis that is
+ *     learned ONLY while at least `minAnchorSources` independent, agreeing USD venues are fresh, updated
+ *     on new observations with elapsed-time weighting, bounded per step and in absolute size. compute()
+ *     is a pure snapshot and never changes the basis (audit H-02).
+ *  5. Across venues: WEIGHTED MEDIAN. Weight = EWMA top-of-book notional (liquidity proxy)
+ *     × freshness (linear decay to 0 at maxAge), capped at `maxWeightShare` per venue.
+ *  6. Quality: OK needs at least `minSources` venues (so the 40% cap genuinely holds) and agreement both
+ *     inside the anchor group and across groups after adjustment. Otherwise CONFLICT / DEGRADED /
+ *     INSUFFICIENT / STALE. DEGRADED (one fallback venue) is for settlement only — it can never open a
+ *     position (audit H-04; enforced on-chain through the signed quality and venue count).
  * The plain median of mids is computed alongside for comparison (showcase metric).
  */
+
+export const MODEL_VERSION = "dime-fv-3";
 
 export type Quote = "USD" | "USDT" | "USDC_PERP";
 
@@ -25,12 +37,15 @@ export interface SourceTick {
   /** sizes in base units (BTC), 8dp */
   bidSize?: bigint;
   askSize?: bigint;
+  /** exchange timestamp when the venue provides one, otherwise the receipt time */
   ts: number;
   recvAt: number;
   seq: number;
+  /** true when `ts` is the exchange's own time (default: ts !== recvAt) */
+  hasSourceTs?: boolean;
 }
 
-/** DEGRADED = too few fresh venues; the estimate is Hyperliquid alone (basis-adjusted, flagged). */
+/** DEGRADED = too few fresh venues; the estimate is one fallback venue (basis-adjusted, settlement only). */
 export type Quality = "OK" | "DEGRADED" | "STALE" | "CONFLICT" | "INSUFFICIENT";
 
 export interface VenueView {
@@ -42,7 +57,8 @@ export interface VenueView {
   depthUsd: number; // EWMA top-of-book notional, USD
   freshness: number; // 0..1
   weight: number; // final normalised weight (0 if excluded)
-  ageMs: number;
+  ageMs: number; // age of the observation (exchange time where available)
+  obsMs: number; // observation time used for freshness
 }
 
 export interface Estimate {
@@ -51,8 +67,11 @@ export interface Estimate {
   divergenceBps: number; // estimate vs plain median
   quality: Quality;
   used: string[];
-  disagreementBps: number; // max spread among used adjusted prices
-  ageMs: number; // age of freshest source
+  disagreementBps: number; // max spread among used adjusted prices (after basis)
+  rawDisagreementBps: number; // max spread inside any quote group (before basis)
+  anchorSources: number; // fresh USD venues behind the basis
+  ageMs: number; // age of the freshest observation
+  obsMs: number; // OLDEST observation behind the estimate (conservative), 0 when none
   basis: Partial<Record<Quote, bigint>>; // group → added to that group's prices
   venues: VenueView[];
 }
@@ -60,11 +79,24 @@ export interface Estimate {
 export interface AggregateParams {
   maxAgeMs: number;
   maxDisagreementBps: number;
+  /** venues needed for OK (default 3, so a 40% cap can actually hold) */
   minSources: number;
   maxWeightShare?: number; // default 0.4
-  anchor?: Quote; // default USD, falling back to the first fresh group
+  anchor?: Quote; // default USD
   /** Venue used alone when fewer than minSources are fresh (default "hyperliquid"); null disables. */
   degradedFallback?: string | null;
+  /** exchange timestamps may lead receipt by at most this (clock skew), default 1000 ms */
+  maxSkewMs?: number;
+  /** a lower sequence is accepted only after this long without updates (reconnect), default 5000 ms */
+  resetGapMs?: number;
+  /** independent fresh anchor venues required to learn the basis, default 2 */
+  minAnchorSources?: number;
+  /** basis EWMA time constant, default 60 s */
+  basisTauMs?: number;
+  /** largest basis move per update, bps of price, default 5 */
+  maxBasisStepBps?: number;
+  /** largest basis allowed at all, bps; a group beyond it is excluded, default 100 */
+  maxBasisBps?: number;
 }
 
 const BPS = 10_000n;
@@ -114,22 +146,47 @@ export function capWeights(ws: number[], cap: number): number[] {
   return out;
 }
 
+const spreadBps = (xs: bigint[]) => {
+  if (xs.length < 2) return 0;
+  let lo = xs[0], hi = xs[0];
+  for (const x of xs) { if (x < lo) lo = x; if (x > hi) hi = x; }
+  return Number(((hi - lo) * BPS * 100n) / lo) / 100;
+};
+
+export type RejectReason = "skew" | "order";
+
 export class Aggregator {
   private latest = new Map<string, SourceTick>();
   private depth = new Map<string, number>();
   private basis: Partial<Record<Quote, bigint>> = {};
+  private basisAt: Partial<Record<Quote, number>> = {};
+  readonly rejected: Record<RejectReason, number> = { skew: 0, order: 0 };
 
   constructor(private p: AggregateParams) {}
 
+  private hasTs(t: SourceTick) { return t.hasSourceTs ?? t.ts !== t.recvAt; }
+  /** Observation time used for freshness: the exchange's time when it has one (never later than receipt). */
+  obsTime(t: SourceTick) { return this.hasTs(t) ? Math.min(t.ts, t.recvAt) : t.recvAt; }
+
+  /** Accept a tick if it is newer than what we have for the venue. Returns false (and counts why) if not. */
   update(t: SourceTick) {
+    const skew = this.p.maxSkewMs ?? 1000;
+    if (this.hasTs(t) && t.ts > t.recvAt + skew) { this.rejected.skew++; return false; }
     const prev = this.latest.get(t.id);
-    if (prev && t.seq <= prev.seq && t.ts <= prev.ts) return false; // duplicate / out-of-order (e.g. from the redundant connection)
+    if (prev) {
+      const reconnect = t.recvAt - prev.recvAt > (this.p.resetGapMs ?? 5000);
+      if (!reconnect && (t.seq <= prev.seq || (this.hasTs(t) && this.hasTs(prev) && t.ts < prev.ts))) {
+        this.rejected.order++;
+        return false; // duplicate or older update (e.g. from the redundant connection)
+      }
+    }
     this.latest.set(t.id, t);
     if (t.bidSize !== undefined && t.askSize !== undefined && t.bid !== undefined && t.ask !== undefined) {
       const notional = Number(t.bid * t.bidSize + t.ask * t.askSize) / Number(SCALE * SCALE);
       const prevD = this.depth.get(t.id);
       this.depth.set(t.id, prevD === undefined ? notional : prevD + (notional - prevD) * 0.05);
     }
+    this.learnBasis(t.recvAt);
     return true;
   }
 
@@ -137,57 +194,99 @@ export class Aggregator {
     return [...this.latest.values()];
   }
 
+  basisState() {
+    return { basis: { ...this.basis }, updatedAt: { ...this.basisAt } };
+  }
+
+  private freshGroups(now: number) {
+    const groups = new Map<Quote, bigint[]>();
+    for (const s of this.latest.values()) {
+      if (now - this.obsTime(s) > this.p.maxAgeMs) continue;
+      groups.set(s.quote, [...(groups.get(s.quote) ?? []), microprice(s)]);
+    }
+    return groups;
+  }
+
+  /**
+   * Basis learning — runs on new observations only. Needs an independent, agreeing anchor; bounded per
+   * step and weighted by elapsed time, so one venue cannot drag other groups onto itself (audit H-02).
+   */
+  private learnBasis(now: number) {
+    const anchor = this.p.anchor ?? "USD";
+    const groups = this.freshGroups(now);
+    const ref = groups.get(anchor);
+    if (!ref || ref.length < (this.p.minAnchorSources ?? 2) || spreadBps(ref) > this.p.maxDisagreementBps) return;
+    const refPx = median(ref);
+    this.basis[anchor] = 0n;
+    const tau = this.p.basisTauMs ?? 60_000;
+    const step = (refPx * BigInt(this.p.maxBasisStepBps ?? 5)) / BPS;
+    const absMax = (refPx * BigInt(this.p.maxBasisBps ?? 100)) / BPS;
+    for (const [q, xs] of groups) {
+      if (q === anchor) continue;
+      const sample = refPx - median(xs);
+      if (sample > absMax || sample < -absMax) continue; // implausible basis: never learn it
+      const prev = this.basis[q];
+      if (prev === undefined) { this.basis[q] = sample; this.basisAt[q] = now; continue; }
+      const dt = now - (this.basisAt[q] ?? now);
+      if (dt <= 0) continue;
+      let d = sample - prev;
+      if (d > step) d = step;
+      if (d < -step) d = -step;
+      const alphaPpm = BigInt(Math.round(Math.min(1, dt / tau) * 1_000_000));
+      this.basis[q] = prev + (d * alphaPpm) / 1_000_000n;
+      this.basisAt[q] = now;
+    }
+  }
+
+  /** Pure snapshot: reads state, never changes it. */
   compute(now: number): Estimate | null {
     const all = this.sources();
     if (!all.length) return null;
-    const fresh = all.filter((s) => now - s.recvAt <= this.p.maxAgeMs);
-    const groups = new Map<Quote, bigint[]>();
-    for (const s of fresh) groups.set(s.quote, [...(groups.get(s.quote) ?? []), microprice(s)]);
-    // Anchor = configured group (USD). If it's not fresh, KEEP the last measured bases rather than
-    // re-anchoring (re-anchoring would zero another group's basis and jump the estimate). Only at
-    // startup, before any basis exists, does the first fresh group stand in as the anchor.
-    const want: Quote = this.p.anchor ?? "USD";
-    const anchor: Quote | undefined = groups.has(want) ? want
-      : Object.keys(this.basis).length === 0 ? [...groups.keys()][0] : undefined;
-    if (anchor) {
-      const ref = median(groups.get(anchor)!);
-      this.basis[anchor] = 0n;
-      for (const [q, xs] of groups) {
-        if (q === anchor) continue;
-        const b = ref - median(xs);
-        const prev = this.basis[q];
-        this.basis[q] = prev === undefined ? b : prev + (b - prev) / 16n; // EWMA α = 1/16
-      }
-    }
+    const anchor = this.p.anchor ?? "USD";
+    const absMax = (q: Quote, px: bigint) => q === anchor ? true : (() => {
+      const b = this.basis[q];
+      if (b === undefined) return false;
+      const lim = (px * BigInt(this.p.maxBasisBps ?? 100)) / BPS;
+      return b <= lim && b >= -lim;
+    })();
     const maxShare = this.p.maxWeightShare ?? 0.4;
-    const newest = Math.max(...all.map((s) => s.recvAt));
     const venues: VenueView[] = all.map((s) => {
-      const ageMs = Math.max(0, now - s.recvAt);
+      const obsMs = this.obsTime(s);
+      const ageMs = Math.max(0, now - obsMs);
       const micro = microprice(s);
-      const b = this.basis[s.quote];
-      const freshness = ageMs >= this.p.maxAgeMs || b === undefined ? 0 : 1 - ageMs / this.p.maxAgeMs;
+      const b = s.quote === anchor ? 0n : this.basis[s.quote];
+      const ok = ageMs < this.p.maxAgeMs && b !== undefined && absMax(s.quote, micro);
+      const freshness = ok ? 1 - ageMs / this.p.maxAgeMs : 0;
       return {
         id: s.id, quote: s.quote, mid: s.bid !== undefined && s.ask !== undefined ? (s.bid + s.ask) / 2n : s.price, micro,
-        adjusted: micro + (b ?? 0n), depthUsd: this.depth.get(s.id) ?? 0, freshness, weight: 0, ageMs,
+        adjusted: micro + (b ?? 0n), depthUsd: this.depth.get(s.id) ?? 0, freshness, weight: 0, ageMs, obsMs,
       };
     });
+    const fresh = venues.filter((v) => v.ageMs < this.p.maxAgeMs);
     const usable = venues.filter((v) => v.freshness > 0);
-    const ageMs = Math.max(0, now - newest);
-    const plainMedian = usable.length ? median(usable.map((v) => v.mid + (this.basis[v.quote] ?? 0n))) : median(all.map((s) => s.price));
+    const ageMs = Math.min(...venues.map((v) => v.ageMs));
+    const byGroup = new Map<Quote, bigint[]>();
+    for (const v of fresh) byGroup.set(v.quote, [...(byGroup.get(v.quote) ?? []), v.micro]);
+    const rawDisagreementBps = Math.max(0, ...[...byGroup.values()].map(spreadBps));
+    const anchorSources = byGroup.get(anchor)?.length ?? 0;
+    const anchorSpread = spreadBps(byGroup.get(anchor) ?? []);
+    const basisOut = { ...this.basis };
+    const plainMedian = usable.length ? median(usable.map((v) => v.mid + (v.quote === anchor ? 0n : this.basis[v.quote] ?? 0n))) : median(all.map((s) => s.price));
+
     if (usable.length < this.p.minSources) {
-      // Degraded mode: a single fresh, basis-aligned fallback venue (Hyperliquid by default).
+      // Degraded mode: one fresh, basis-aligned fallback venue (Hyperliquid by default). Settlement only.
       const fb = this.p.degradedFallback === undefined ? "hyperliquid" : this.p.degradedFallback;
       const v = fb ? usable.find((u) => u.id === fb) : undefined;
       if (v) {
         v.weight = 1;
         return {
           estimate: v.adjusted, plainMedian, divergenceBps: 0, quality: "DEGRADED", used: [v.id],
-          disagreementBps: 0, ageMs, basis: { ...this.basis }, venues,
+          disagreementBps: 0, rawDisagreementBps, anchorSources, ageMs, obsMs: v.obsMs, basis: basisOut, venues,
         };
       }
       return {
         estimate: plainMedian, plainMedian, divergenceBps: 0, quality: fresh.length ? "INSUFFICIENT" : "STALE",
-        used: [], disagreementBps: 0, ageMs, basis: { ...this.basis }, venues,
+        used: [], disagreementBps: 0, rawDisagreementBps, anchorSources, ageMs, obsMs: 0, basis: basisOut, venues,
       };
     }
     // Liquidity proxy: venues without size data get the median depth so they still count.
@@ -197,14 +296,14 @@ export class Aggregator {
     const capped = capWeights(raw, maxShare);
     usable.forEach((v, i) => { v.weight = capped[i]; });
     const estimate = weightedMedian(usable.map((v) => ({ price: v.adjusted, weight: v.weight })));
-    let lo = usable[0].adjusted, hi = usable[0].adjusted;
-    for (const v of usable) { if (v.adjusted < lo) lo = v.adjusted; if (v.adjusted > hi) hi = v.adjusted; }
-    const disagreementBps = Number(((hi - lo) * BPS * 100n) / estimate) / 100;
+    const disagreementBps = spreadBps(usable.map((v) => v.adjusted));
     const divergenceBps = Number(((estimate - plainMedian) * BPS * 1000n) / estimate) / 1000;
+    const conflict = disagreementBps > this.p.maxDisagreementBps || anchorSpread > this.p.maxDisagreementBps;
     return {
-      estimate, plainMedian, divergenceBps, ageMs, basis: { ...this.basis }, venues,
-      quality: disagreementBps > this.p.maxDisagreementBps ? "CONFLICT" : "OK",
-      used: usable.map((v) => v.id), disagreementBps,
+      estimate, plainMedian, divergenceBps, ageMs, basis: basisOut, venues,
+      quality: conflict ? "CONFLICT" : "OK",
+      used: usable.map((v) => v.id), disagreementBps, rawDisagreementBps, anchorSources,
+      obsMs: Math.min(...usable.map((v) => v.obsMs)),
     };
   }
 }

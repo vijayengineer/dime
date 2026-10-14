@@ -17,7 +17,7 @@ import {IDimeTypes, IPriceVerifier} from "../src/interfaces/IDime.sol";
 /// Env:
 ///   DIME_STAGE        testnet | commissioning | mainnet      (required)
 ///   DIME_ADMIN        final admin (multisig / founder cold wallet)
-///   DIME_RELAYER, DIME_GUARDIAN, DIME_REPORTER, DIME_KEEPER (optional, informational)
+///   DIME_RELAYER, DIME_GUARDIAN, DIME_REPORTER, DIME_KEEPER (all required; the keeper gets KEEPER_ROLE)
 ///   DIME_COLLATERAL   canonical USDC address (required unless testnet, where a TestUSDC is deployed)
 ///   DIME_FUNDING_CAP, DIME_EPOCH_SECONDS  (optional overrides, base units / seconds)
 contract Deploy is Script, IDimeTypes {
@@ -35,6 +35,7 @@ contract Deploy is Script, IDimeTypes {
         address relayer = vm.envAddress("DIME_RELAYER");
         address guardian = vm.envAddress("DIME_GUARDIAN");
         address reporter = vm.envAddress("DIME_REPORTER");
+        address keeper = vm.envAddress("DIME_KEEPER");
 
         // Signer: DEPLOYER_PK from the environment (set by scripts/deploy.sh from a root-only key file,
         // never a command-line argument), or the CLI-configured signer (keystore / hardware wallet).
@@ -67,7 +68,8 @@ contract Deploy is Script, IDimeTypes {
 
         dime.grantRole(dime.RELAYER_ROLE(), relayer);
         dime.grantRole(dime.GUARDIAN_ROLE(), guardian);
-        if (isCommissioning) {
+        dime.grantRole(dime.KEEPER_ROLE(), keeper);
+        if (isCommissioning && vm.envOr("DIME_ALLOWLIST_ON", false)) {
             dime.setAllowlistEnabled(true);
             // Founder / consenting tester wallets allowed to deposit and trade during commissioning.
             address[] memory allow = vm.envOr("DIME_ALLOWLIST", ",", new address[](0));
@@ -85,13 +87,13 @@ contract Deploy is Script, IDimeTypes {
         }
         vm.stopBroadcast();
 
-        _writeManifest(stage, dime, oracle, collateral, testToken, admin, relayer, guardian, reporter, dimeToken);
+        _writeManifest(stage, dime, oracle, collateral, testToken, admin, relayer, guardian, reporter, keeper, dimeToken);
     }
 
     function _config(bool commissioning) internal view returns (Config memory c) {
         c.fundingCapPerWallet = uint128(vm.envOr("DIME_FUNDING_CAP", commissioning ? uint256(1e6) : uint256(10e6)));
         c.minCollateral = 0.1e6;
-        c.maxCollateral = commissioning ? 0.5e6 : 2e6;
+        c.maxCollateral = commissioning ? 1e6 : 2e6;
         c.maxLeverage = 1000;
         c.profitFeeBps = 2500;
         c.maintenanceBps = 1000;
@@ -99,22 +101,24 @@ contract Deploy is Script, IDimeTypes {
         c.protectionTriggerBps = 9000;
         c.houseMaxUtilisationBps = 8000;
         c.houseMaxNetNotionalMultiple = 200;
-        c.maxConcurrentHousePositions = commissioning ? 3 : 10;
+        c.maxConcurrentHousePositions = uint16(vm.envOr("DIME_HOUSE_SLOTS", uint256(commissioning ? 4 : 10)));
         c.maxConcurrentMatchedPairs = commissioning ? 5 : 25;
         c.matchedGapBackstop = 0;
-        c.dimePerUsdE18 = 0.1e18; // 0.1 DIME per $1 of eligible loss (UNVALIDATED)
+        c.dimePerUsdE18 = 1000e18; // 1,000 DIME per $1 of eligible loss (live setting since config v2; UNVALIDATED)
         c.emissionDecayTvl = uint128(vm.envOr("DIME_EMISSION_DECAY_TVL", uint256(1_000_000e6))); // $1M house reserve
-        c.minStake = uint128(vm.envOr("DIME_MIN_STAKE", uint256(0.1e18))); // 0.1 DIME (UNVALIDATED)
-        c.maxMintPerEpoch = uint128(vm.envOr("DIME_MAX_MINT_PER_EPOCH", commissioning ? uint256(100e18) : uint256(10_000e18)));
+        c.minStake = uint128(vm.envOr("DIME_MIN_STAKE", uint256(100e18))); // 100 DIME (UNVALIDATED)
+        c.maxMintPerEpoch = uint128(vm.envOr("DIME_MAX_MINT_PER_EPOCH", uint256(100_000e18)));
         c.distributionShareBps = 2000;
         c.distributionReserveFloor = 10e6;
         c.epochSeconds = uint64(vm.envOr("DIME_EPOCH_SECONDS", uint256(commissioning ? 86400 : 3600)));
         c.maxPriceAgeMs = 3000;
+        c.minOpenSources = 3; // opening needs an OK price from at least 3 venues (audit H-04)
+        c.maxSourceAgeMs = 2000; // ...built from exchange data no older than 2 s (audit H-03)
     }
 
     function _writeManifest(
         string memory stage, DimeProtocol dime, OperatorPriceVerifier oracle, IERC20 collateral, bool testToken,
-        address admin, address relayer, address guardian, address reporter, DimeToken dimeToken
+        address admin, address relayer, address guardian, address reporter, address keeper, DimeToken dimeToken
     ) internal {
         string memory k = "m";
         vm.serializeUint(k, "chainId", block.chainid);
@@ -137,6 +141,7 @@ contract Deploy is Script, IDimeTypes {
         vm.serializeAddress(k, "admin", admin);
         vm.serializeAddress(k, "relayer", relayer);
         vm.serializeAddress(k, "guardian", guardian);
+        vm.serializeAddress(k, "keeper", keeper);
         string memory json = vm.serializeAddress(k, "reporter", reporter);
         string memory path = string.concat("deployments/", vm.toString(block.chainid), ".json");
         vm.writeJson(json, path);

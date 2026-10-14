@@ -18,7 +18,8 @@ export const ORDER_TYPES = {
 } as const;
 export const CLOSE_TYPES = {
   CloseRequest: [
-    { name: "user", type: "address" }, { name: "positionId", type: "bytes32" }, { name: "expiry", type: "uint64" }, { name: "nonce", type: "uint256" },
+    { name: "user", type: "address" }, { name: "positionId", type: "bytes32" }, { name: "requestedAtMs", type: "uint64" },
+    { name: "expiry", type: "uint64" }, { name: "nonce", type: "uint256" },
   ],
 } as const;
 
@@ -26,7 +27,8 @@ export interface OrderIntent {
   user: Address; market: Hex; side: number; collateral: bigint; leverage: number; routeMask: number;
   matchDeadline: bigint; priceLimit: bigint; configVersion: number; expiry: bigint; nonce: bigint;
 }
-export interface CloseRequest { user: Address; positionId: Hex; expiry: bigint; nonce: bigint }
+/** requestedAtMs fixes the settlement price: the first signed round after it (contract CLOSE_ROUND_SLACK window). */
+export interface CloseRequest { user: Address; positionId: Hex; requestedAtMs: bigint; expiry: bigint; nonce: bigint }
 
 export function makeChain(cfg: Config) {
   const chain = defineChain({

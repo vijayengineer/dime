@@ -20,6 +20,7 @@ contract DimeTest is Test, IDimeTypes {
     address admin = makeAddr("admin");
     address relayer = makeAddr("relayer");
     address guardian = makeAddr("guardian");
+    address keeper = makeAddr("keeper");
     uint256 reporterPk = 0xA11CE;
     uint256 alicePk = 0xA1;
     uint256 bobPk = 0xB0;
@@ -45,6 +46,7 @@ contract DimeTest is Test, IDimeTypes {
         dimeToken.setProtocol(address(dime));
         dime.grantRole(dime.RELAYER_ROLE(), relayer);
         dime.grantRole(dime.GUARDIAN_ROLE(), guardian);
+        dime.grantRole(dime.KEEPER_ROLE(), keeper);
         usdc.mint(admin, 10e6);
         usdc.approve(address(dime), type(uint256).max);
         dime.fundReserve(10e6); // founder commissioning reserve
@@ -76,6 +78,8 @@ contract DimeTest is Test, IDimeTypes {
         c.distributionReserveFloor = 10e6;
         c.epochSeconds = 3600;
         c.maxPriceAgeMs = 3000;
+        c.minOpenSources = 3;
+        c.maxSourceAgeMs = 2000;
     }
 
     /* ------------------------------------------------------------------ helpers */
@@ -92,8 +96,39 @@ contract DimeTest is Test, IDimeTypes {
     }
 
     function _pxAt(uint256 price, uint64 ts) internal view returns (PriceProof memory) {
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(reporterPk, oracle.digest(MKT, price, ts));
-        return PriceProof(abi.encode(price, ts, abi.encodePacked(r, s, v)));
+        return _pxQ(price, ts, 0, 6, ts);
+    }
+
+    /// A signed price round with explicit quality (0 OK / 1 DEGRADED), venue count and observation time.
+    function _pxQ(uint256 price, uint64 ts, uint8 quality, uint8 sources, uint64 obsMs) internal view returns (PriceProof memory) {
+        PriceData memory d = PriceData(price, ts, ts / 250, quality, sources, obsMs);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(reporterPk, oracle.digest(MKT, d));
+        return PriceProof(abi.encode(d.price, d.tsMs, d.round, d.quality, d.sources, d.obsMs, abi.encodePacked(r, s, v)));
+    }
+
+    function _priceOf(PriceProof memory p) internal pure returns (uint256 price) {
+        (price,,,,,,) = abi.decode(p.payload, (uint256, uint64, uint64, uint8, uint8, uint64, bytes));
+    }
+
+    /// Direct close: the owner commits, the keeper settles at the first round after the commit block.
+    function _closeWith(address user, bytes32 id, PriceProof memory at) internal {
+        vm.prank(user);
+        dime.requestClose(id);
+        PriceProof memory settle = _pxAt(_priceOf(at), uint64((vm.getBlockTimestamp() + 1) * 1000));
+        vm.prank(keeper);
+        dime.settleCommittedClose(id, settle);
+    }
+
+    function _liq(bytes32 id, uint256 price) internal {
+        PriceProof memory p = _px(price);
+        vm.prank(keeper);
+        dime.liquidate(id, p);
+    }
+
+    function _protect(bytes32 id, uint256 price) internal {
+        PriceProof memory p = _px(price);
+        vm.prank(keeper);
+        dime.protect(id, p);
     }
 
     function _intent(address user, uint8 side, uint8 mask) internal returns (OrderIntent memory it) {
@@ -196,10 +231,8 @@ contract DimeTest is Test, IDimeTypes {
         assertEq(st.houseLongNotional, 0);
         assertEq(st.matchedNotionalPerSide, 100e6);
         PriceProof memory px = _px(P0);
-        vm.prank(carol);
-        dime.closeOwn(h, px);
-        vm.prank(alice);
-        dime.closeOwn(l, px);
+        _closeWith(carol, h, px);
+        _closeWith(alice, l, px);
         st = dime.houseStats();
         assertEq(st.houseShortNotional + st.houseLongNotional + st.matchedNotionalPerSide, 0);
     }
@@ -210,8 +243,7 @@ contract DimeTest is Test, IDimeTypes {
         assertEq(p.liquidationPrice, P0 - 90e8);
         uint256 reserveBefore = dime.houseStats().reserve;
         PriceProof memory cp1 = _px(P0 + 100e8);
-        vm.prank(alice);
-        dime.closeOwn(id, cp1); // +0.1% on $100 notional = +$0.10 gross
+        _closeWith(alice, id, cp1); // +0.1% on $100 notional = +$0.10 gross
         assertEq(dime.freeBalance(alice), 2e6 - 0.1e6 + 0.175e6); // collateral + 0.075 net
         assertEq(dime.houseStats().reserve, reserveBefore - 0.075e6); // pays net only; fee not added
         assertEq(dime.houseStats().netWinningPayouts, 0.075e6);
@@ -223,8 +255,7 @@ contract DimeTest is Test, IDimeTypes {
     function test_houseLoss_issuesRightsAboveHighWater() public {
         bytes32 id = _openHouse(alicePk, alice, 0, P0);
         PriceProof memory cp2 = _px(P0 - 50e8);
-        vm.prank(alice);
-        dime.closeOwn(id, cp2); // −$0.05
+        _closeWith(alice, id, cp2); // −$0.05
         RightsAccount memory r = dime.rightsOf(alice);
         assertEq(r.pending, 0.005e18); // $0.05 × 0.1 DIME/$
         assertEq(r.pendingEpoch, 2);
@@ -232,19 +263,17 @@ contract DimeTest is Test, IDimeTypes {
         // win back 0.05 net then lose 0.05 again: no new rights (HWM)
         id = _openHouse(alicePk, alice, 0, P0);
         PriceProof memory cp3 = _px(P0 + 67e8);
-        vm.prank(alice);
-        dime.closeOwn(id, cp3); // gross 0.067, fee 0.01675, net 0.05025
+        _closeWith(alice, id, cp3); // gross 0.067, fee 0.01675, net 0.05025
         id = _openHouse(alicePk, alice, 0, P0);
         PriceProof memory cp4 = _px(P0 - 50e8);
-        vm.prank(alice);
-        dime.closeOwn(id, cp4);
+        _closeWith(alice, id, cp4);
         assertEq(dime.rightsOf(alice).pending, 0.005e18);
         _invariant();
     }
 
     function test_houseLiquidation_lossCappedAtCollateralEvenThroughGap() public {
         bytes32 id = _openHouse(alicePk, alice, 0, P0);
-        dime.liquidate(id, _px(P0 - 5_000e8)); // −5% gap at 1000×
+        _liq(id, P0 - 5_000e8); // −5% gap at 1000×
         assertEq(dime.freeBalance(alice), 1.9e6);
         assertEq(dime.houseStats().collectedLosses, 0.1e6);
         _invariant();
@@ -253,6 +282,7 @@ contract DimeTest is Test, IDimeTypes {
     function test_notLiquidatableAboveLiqPrice() public {
         bytes32 id = _openHouse(alicePk, alice, 0, P0);
         PriceProof memory px = _px(P0 - 89e8);
+        vm.prank(keeper);
         vm.expectRevert(DimeProtocol.NotLiquidatable.selector);
         dime.liquidate(id, px);
     }
@@ -260,13 +290,13 @@ contract DimeTest is Test, IDimeTypes {
     function test_reserveProtection_extendsThenCloses() public {
         bytes32 id = _openHouse(alicePk, alice, 0, P0);
         // reservation 2.0; trigger at 1.8 gross ⇒ +1.8% move
-        dime.protect(id, _px(P0 + 1_800e8));
+        _protect(id, P0 + 1_800e8);
         assertEq(dime.getPosition(id).houseReservation, 4e6);
         // exhaust remaining capacity (reserve*0.8 − used) with other positions, then protection closes
         _openHouse(bobPk, bob, 1, P0 + 1_800e8);
         _openHouse(carolPk, carol, 1, P0 + 1_800e8);
         // capacity: 8.0 − (4+2+2)=0
-        dime.protect(id, _px(P0 + 3_700e8));
+        _protect(id, P0 + 3_700e8);
         assertEq(dime.getPosition(id).user, address(0)); // closed
         _invariant();
     }
@@ -308,8 +338,7 @@ contract DimeTest is Test, IDimeTypes {
         assertEq(dime.houseStats().reservedLiabilities, 0); // matched collateral is not house capital
         uint256 reserveBefore = dime.houseStats().reserve;
         PriceProof memory cp5 = _px(P0 + 50e8);
-        vm.prank(bob);
-        dime.closeOwn(s, cp5); // short closes at a loss; long wins 0.05 gross
+        _closeWith(bob, s, cp5); // short closes at a loss; long wins 0.05 gross
         assertEq(dime.getPosition(l).user, address(0));
         assertEq(dime.freeBalance(alice), 1.9e6 + 0.1e6 + 0.05e6 - 0.0125e6);
         assertEq(dime.freeBalance(bob), 1.9e6 + 0.05e6);
@@ -322,8 +351,7 @@ contract DimeTest is Test, IDimeTypes {
     function test_matched_gapCappedAtLoserCollateral() public {
         (bytes32 l,) = _openPair(P0);
         PriceProof memory cp6 = _px(P0 + 1_000e8);
-        vm.prank(alice);
-        dime.closeOwn(l, cp6); // raw +$1.00, loser only has $0.10
+        _closeWith(alice, l, cp6); // raw +$1.00, loser only has $0.10
         assertEq(dime.freeBalance(alice), 1.9e6 + 0.1e6 + 0.1e6 - 0.025e6);
         assertEq(dime.freeBalance(bob), 1.9e6);
         _invariant();
@@ -331,7 +359,7 @@ contract DimeTest is Test, IDimeTypes {
 
     function test_matched_liquidationSettlesBoth() public {
         (bytes32 l,) = _openPair(P0);
-        dime.liquidate(l, _px(P0 - 90e8));
+        _liq(l, P0 - 90e8);
         assertEq(dime.freeBalance(alice), 1.9e6);
         assertEq(dime.freeBalance(bob), 1.9e6 + 0.2e6 - 0.025e6);
         _invariant();
@@ -373,8 +401,7 @@ contract DimeTest is Test, IDimeTypes {
         PriceProof memory px = _px(P0);
         vm.prank(relayer);
         bytes32 id = dime.openHouse(it, sig, px);
-        vm.prank(alice);
-        dime.closeOwn(id, px);
+        _closeWith(alice, id, px);
         vm.prank(relayer);
         vm.expectRevert(DimeProtocol.NonceUsed.selector);
         dime.openHouse(it, sig, px);
@@ -467,8 +494,9 @@ contract DimeTest is Test, IDimeTypes {
         OrderIntent memory it = _intent(alice, 0, 2);
         bytes memory sig = _sign(alicePk, it);
         uint64 ts = uint64(vm.getBlockTimestamp() * 1000);
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(0xBAD, oracle.digest(MKT, P0, ts));
-        PriceProof memory px = PriceProof(abi.encode(P0, ts, abi.encodePacked(r, s, v)));
+        PriceData memory d = PriceData(P0, ts, ts / 250, 0, 6, ts);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(0xBAD, oracle.digest(MKT, d));
+        PriceProof memory px = PriceProof(abi.encode(d.price, d.tsMs, d.round, d.quality, d.sources, d.obsMs, abi.encodePacked(r, s, v)));
         vm.prank(relayer);
         vm.expectRevert(OperatorPriceVerifier.BadReporter.selector);
         dime.openHouse(it, sig, px);
@@ -503,14 +531,13 @@ contract DimeTest is Test, IDimeTypes {
         dime.setProtocolState(ProtocolState.ORACLE_HOLD);
         vm.prank(alice);
         vm.expectRevert(DimeProtocol.StateForbids.selector);
-        dime.closeOwn(id, px);
+        dime.requestClose(id);
         vm.prank(bob);
         dime.withdraw(1e6); // withdrawals always work
         vm.prank(admin);
         dime.setProtocolState(ProtocolState.OPEN);
         PriceProof memory cp7 = _px(P0);
-        vm.prank(alice);
-        dime.closeOwn(id, cp7);
+        _closeWith(alice, id, cp7);
         _invariant();
     }
 
@@ -521,7 +548,9 @@ contract DimeTest is Test, IDimeTypes {
         dime.setProtocolState(ProtocolState.WIND_DOWN);
         bytes32[] memory ids = new bytes32[](3);
         (ids[0], ids[1], ids[2]) = (h, l, s);
-        dime.windDownSettle(ids, _px(P0 + 10e8));
+        PriceProof memory wp = _px(P0 + 10e8);
+        vm.prank(keeper);
+        dime.windDownSettle(ids, wp);
         assertEq(dime.houseStats().openHousePositions, 0);
         assertEq(dime.houseStats().openMatchedPairs, 0);
         _invariant();
@@ -531,7 +560,7 @@ contract DimeTest is Test, IDimeTypes {
     function test_rightsLifecycle_fundActivateClaim() public {
         // epoch 1: alice loses 0.10 to the house → 0.10 pending rights for epoch 2
         bytes32 id = _openHouse(alicePk, alice, 0, P0);
-        dime.liquidate(id, _px(P0 - 90e8));
+        _liq(id, P0 - 90e8);
         vm.expectRevert(DimeProtocol.EpochNotOver.selector);
         dime.fundAndAdvance();
         vm.warp(vm.getBlockTimestamp() + 3600);
@@ -543,7 +572,7 @@ contract DimeTest is Test, IDimeTypes {
 
         // epoch 2: bob loses 0.10 to the house; reserve is 10.2, floor 10 → surplus 0.2, target 0.02
         id = _openHouse(bobPk, bob, 0, P0);
-        dime.liquidate(id, _px(P0 - 90e8));
+        _liq(id, P0 - 90e8);
         vm.warp(vm.getBlockTimestamp() + 3600);
         dime.fundAndAdvance();
         assertEq(dime.rightsOf(alice).claimable, 0.02e6);
@@ -558,17 +587,15 @@ contract DimeTest is Test, IDimeTypes {
 
     function test_houseLossMustBeRecoveredBeforeDistribution() public {
         bytes32 id = _openHouse(alicePk, alice, 0, P0);
-        dime.liquidate(id, _px(P0 - 90e8)); // house +0.10
+        _liq(id, P0 - 90e8); // house +0.10
         vm.warp(vm.getBlockTimestamp() + 3600);
         dime.fundAndAdvance();
         id = _openHouse(bobPk, bob, 0, P0);
         PriceProof memory cp8 = _px(P0 + 100e8);
-        vm.prank(bob);
-        dime.closeOwn(id, cp8); // house −0.075
+        _closeWith(bob, id, cp8); // house −0.075
         id = _openHouse(carolPk, carol, 0, P0);
         PriceProof memory cp9 = _px(P0 - 50e8);
-        vm.prank(carol);
-        dime.closeOwn(id, cp9); // house +0.05 → still below HWM
+        _closeWith(carol, id, cp9); // house +0.05 → still below HWM
         vm.warp(vm.getBlockTimestamp() + 3600);
         dime.fundAndAdvance();
         assertEq(dime.distributionsFunded(), 0);
@@ -581,11 +608,10 @@ contract DimeTest is Test, IDimeTypes {
         uint256 exit = move % 2 == 0 ? P0 + move : P0 - move;
         Position memory p = dime.getPosition(id);
         bool liq = long_ ? exit <= p.liquidationPrice : exit >= p.liquidationPrice;
-        if (liq) dime.liquidate(id, _px(exit));
+        if (liq) _liq(id, exit);
         else {
             PriceProof memory cp10 = _px(exit);
-            vm.prank(alice);
-            dime.closeOwn(id, cp10);
+            _closeWith(alice, id, cp10);
         }
         _invariant();
         assertLe(dime.freeBalance(alice), 2e6 + 2e6); // never more than collateral + reservation
@@ -596,11 +622,10 @@ contract DimeTest is Test, IDimeTypes {
         (bytes32 l,) = _openPair(P0);
         uint256 exit = move % 2 == 0 ? P0 + move : P0 - move;
         Position memory p = dime.getPosition(l);
-        if (exit <= p.liquidationPrice) dime.liquidate(l, _px(exit));
+        if (exit <= p.liquidationPrice) _liq(l, exit);
         else {
             PriceProof memory cp11 = _px(exit);
-            vm.prank(alice);
-            dime.closeOwn(l, cp11);
+            _closeWith(alice, l, cp11);
         }
         _invariant();
         assertLe(dime.freeBalance(alice) + dime.freeBalance(bob), 4e6);
@@ -629,20 +654,20 @@ contract DimeTest is Test, IDimeTypes {
         PriceProof memory px = _px(P0);
         vm.prank(relayer);
         bytes32 id = dime.openHouse(it, sig, px);
-        dime.liquidate(id, _px(P0 - 90e8)); // $0.10 → 0.01 DIME
+        _liq(id, P0 - 90e8); // $0.10 → 0.01 DIME
         it = _intent(bob, 0, 2);
         it.configVersion = 2;
         sig = _sign(bobPk, it);
         px = _px(P0);
         vm.prank(relayer);
         id = dime.openHouse(it, sig, px);
-        dime.liquidate(id, _px(P0 - 90e8)); // would be 0.01, only 0.002 left
+        _liq(id, P0 - 90e8); // would be 0.01, only 0.002 left
         assertEq(dime.rightsOf(bob).pending, 0.002e18);
     }
 
     function test_stakeUnstakeAndNonTransferable() public {
         bytes32 id = _openHouse(alicePk, alice, 0, P0);
-        dime.liquidate(id, _px(P0 - 90e8)); // 0.01 DIME pending
+        _liq(id, P0 - 90e8); // 0.01 DIME pending
         vm.warp(vm.getBlockTimestamp() + 3600);
         dime.fundAndAdvance();
         assertEq(dime.rightsOf(alice).active, 0.01e18);
@@ -670,7 +695,7 @@ contract DimeTest is Test, IDimeTypes {
 
     function test_dimeNonTransferableUntilScheduledOpen() public {
         bytes32 id = _openHouse(alicePk, alice, 0, P0);
-        dime.liquidate(id, _px(P0 - 90e8));
+        _liq(id, P0 - 90e8);
         vm.warp(vm.getBlockTimestamp() + 3600);
         dime.fundAndAdvance();
         vm.prank(alice);
@@ -710,7 +735,7 @@ contract DimeTest is Test, IDimeTypes {
 
     function test_minStake() public {
         bytes32 id = _openHouse(alicePk, alice, 0, P0);
-        dime.liquidate(id, _px(P0 - 90e8)); // 0.01 DIME auto-staked (auto-issued stake ignores the minimum)
+        _liq(id, P0 - 90e8); // 0.01 DIME auto-staked (auto-issued stake ignores the minimum)
         vm.warp(vm.getBlockTimestamp() + 3600);
         dime.fundAndAdvance();
         vm.startPrank(alice);
@@ -735,12 +760,20 @@ contract DimeTest is Test, IDimeTypes {
     }
 
     function test_onlyProtocolMints() public {
-        vm.expectRevert();
+        vm.expectRevert(DimeToken.NotProtocol.selector);
         dimeToken.mint(alice, 1e18);
-        // admin cannot add a second minter after wiring
-        bytes32 minter = dimeToken.MINTER_ROLE();
-        vm.prank(admin);
-        vm.expectRevert();
-        dimeToken.grantRole(minter, admin);
+    }
+
+    /// Audit M-01 regression: the admin's old path (grant itself the lock role, then a minter role) mints nothing.
+    function test_audit_M01_adminCannotBecomeMinter() public {
+        vm.startPrank(admin);
+        dimeToken.grantRole(keccak256("DIME_MINTER_LOCKED"), admin);
+        dimeToken.grantRole(keccak256("MINTER_ROLE"), admin);
+        vm.expectRevert(DimeToken.NotProtocol.selector);
+        dimeToken.mint(admin, 1_000_000e18);
+        vm.expectRevert(DimeToken.AlreadySet.selector);
+        dimeToken.setProtocol(admin); // the minter can never be re-pointed
+        vm.stopPrank();
+        assertEq(dimeToken.totalSupply(), 0);
     }
 }

@@ -7,7 +7,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { loadPricingConfig, readKey } from "../config";
 import { log } from "../log";
 import { Counters, Latency } from "../metrics";
-import { Aggregator, type Estimate, type SourceTick } from "./aggregate";
+import { Aggregator, MODEL_VERSION, type Estimate, type SourceTick } from "./aggregate";
 import { connectSource, SOURCES, startMockSources, type Aux, type SourceHandle } from "./sources";
 
 /**
@@ -22,13 +22,16 @@ import { connectSource, SOURCES, startMockSources, type Aux, type SourceHandle }
  */
 const cfg = loadPricingConfig();
 const BTC_MARKET = keccak256(toHex("BTC-USD"));
-const TAG = keccak256(toHex("DIME_OPERATOR_PRICE_V1"));
+const TAG = keccak256(toHex("DIME_OPERATOR_PRICE_V2"));
+/** Price rounds: one signature per 250 ms round, round = floor(tsMs / ROUND_MS) (verifier enforces it). */
+const ROUND_MS = 250;
+const QUALITY_CODE = { OK: 0, DEGRADED: 1 } as const;
 const PROD = cfg.NODE_ENV === "production";
 const REDUNDANT = new Set((process.env.REDUNDANT_SOURCES ?? "hyperliquid,binance").split(",").map((x) => x.trim()));
 const REDUNDANCY = Number(process.env.REDUNDANCY ?? 2);
 const FEED_ORIGINS = (process.env.FEED_ALLOWED_ORIGINS ?? cfg.CORS_ORIGINS).split(",").map((x) => x.trim());
 
-const agg = new Aggregator({ maxAgeMs: cfg.MAX_SOURCE_AGE_MS, maxDisagreementBps: cfg.MAX_DISAGREEMENT_BPS, minSources: cfg.MIN_SOURCES });
+const agg = new Aggregator({ maxAgeMs: cfg.MAX_SOURCE_AGE_MS, maxDisagreementBps: cfg.MAX_DISAGREEMENT_BPS, minSources: cfg.MIN_SOURCES, maxWeightShare: 0.4 });
 const internalLatency = new Latency();
 const signLatency = new Latency();
 const counters = new Counters();
@@ -38,8 +41,11 @@ let indexAvailableMs = 0, indexObservedMs = 0, indexGaps = 0, indexMaxGapMs = 0,
 const reporter = cfg.REPORTER_KEY_FILE ? privateKeyToAccount(readKey(cfg.REPORTER_KEY_FILE, "reporter")) : null;
 if (!reporter) log.warn("REPORTER_KEY_FILE not set: no reference proofs will be signed");
 
-interface Proof { price: string; tsMs: number; payload: Hex; signer: string }
+interface Proof { price: string; tsMs: number; round: number; quality: "OK" | "DEGRADED"; sources: number; obsMs: number; payload: Hex; signer: string }
 let latestProof: Proof | null = null;
+/** Signed rounds kept for settlement lookups ("first round after this close request"), ~10 minutes. */
+const proofsByRound = new Map<number, Proof>();
+const PROOF_RING = 2400;
 let latestEstimate: Estimate | null = null;
 let latestSnapshot: Record<string, unknown> | null = null;
 let oracle: { price: string; markPx?: string; ts: number } | null = null;
@@ -144,25 +150,50 @@ setInterval(() => {
 }, 100);
 let outageStart: number | null = null;
 
+let lastSignedRound = -1;
 async function signReference() {
   if (!reporter) return;
-  const e = agg.compute(Date.now());
-  if (!e || (e.quality !== "OK" && e.quality !== "DEGRADED")) { counters.inc("proof.skippedQuality"); return; }
-  const t0 = performance.now();
   const tsMs = Date.now();
+  const round = Math.floor(tsMs / ROUND_MS);
+  if (round <= lastSignedRound) return; // exactly one signature per round
+  const e = agg.compute(tsMs);
+  if (!e || (e.quality !== "OK" && e.quality !== "DEGRADED")) { counters.inc("proof.skippedQuality"); return; }
+  lastSignedRound = round;
+  const t0 = performance.now();
+  const quality = QUALITY_CODE[e.quality];
+  const sources = e.used.length;
+  const obsMs = Math.min(e.obsMs || tsMs, tsMs);
   const inner = keccak256(encodeAbiParameters(
-    [{ type: "bytes32" }, { type: "uint256" }, { type: "address" }, { type: "bytes32" }, { type: "uint256" }, { type: "uint64" }],
-    [TAG, BigInt(cfg.CHAIN_ID), cfg.manifest!.verifier, BTC_MARKET, e.estimate, BigInt(tsMs)],
+    [{ type: "bytes32" }, { type: "uint256" }, { type: "address" }, { type: "bytes32" }, { type: "uint256" }, { type: "uint64" },
+      { type: "uint64" }, { type: "uint8" }, { type: "uint8" }, { type: "uint64" }],
+    [TAG, BigInt(cfg.CHAIN_ID), cfg.manifest!.verifier, BTC_MARKET, e.estimate, BigInt(tsMs), BigInt(round), quality, sources, BigInt(obsMs)],
   ));
   const sig = await reporter.signMessage({ message: { raw: inner } });
-  const payload = encodeAbiParameters([{ type: "uint256" }, { type: "uint64" }, { type: "bytes" }], [e.estimate, BigInt(tsMs), sig]);
-  latestProof = { price: e.estimate.toString(), tsMs, payload, signer: reporter.address };
+  const payload = encodeAbiParameters(
+    [{ type: "uint256" }, { type: "uint64" }, { type: "uint64" }, { type: "uint8" }, { type: "uint8" }, { type: "uint64" }, { type: "bytes" }],
+    [e.estimate, BigInt(tsMs), BigInt(round), quality, sources, BigInt(obsMs), sig],
+  );
+  const proof: Proof = { price: e.estimate.toString(), tsMs, round, quality: e.quality, sources, obsMs, payload, signer: reporter.address };
+  latestProof = proof;
+  proofsByRound.set(round, proof);
+  if (proofsByRound.size > PROOF_RING) proofsByRound.delete(proofsByRound.keys().next().value!);
+  const msg = JSON.stringify({ type: "proof", proof });
+  for (const c of internalClients) if (c.readyState === c.OPEN && c.bufferedAmount < 1 << 20) c.send(msg);
+  // Everything needed to replay this round: model version, every input with exchange and receipt times,
+  // full-precision weights, the basis state it used and when that basis last changed (audit L-02).
+  const bs = agg.basisState();
   audit({
-    tsMs, price: e.estimate.toString(), quality: e.quality, signer: reporter.address, sig,
-    plainMedian: e.plainMedian.toString(), disagreementBps: e.disagreementBps,
-    basis: Object.fromEntries(Object.entries(e.basis).map(([k, v]) => [k, v!.toString()])),
-    inputs: agg.sources().map((t) => ({ id: t.id, quote: t.quote, bid: t.bid?.toString(), ask: t.ask?.toString(), bidSize: t.bidSize?.toString(), askSize: t.askSize?.toString(), ts: t.ts, seq: t.seq })),
-    weights: Object.fromEntries(e.venues.map((v) => [v.id, Math.round(v.weight * 10_000) / 10_000])),
+    model: MODEL_VERSION, round, tsMs, price: e.estimate.toString(), quality: e.quality, sources, obsMs, signer: reporter.address, sig,
+    plainMedian: e.plainMedian.toString(), disagreementBps: e.disagreementBps, rawDisagreementBps: e.rawDisagreementBps, anchorSources: e.anchorSources,
+    used: e.used,
+    params: { maxAgeMs: cfg.MAX_SOURCE_AGE_MS, maxDisagreementBps: cfg.MAX_DISAGREEMENT_BPS, minSources: cfg.MIN_SOURCES, maxWeightShare: 0.4 },
+    basis: Object.fromEntries(Object.entries(bs.basis).map(([k, v]) => [k, v!.toString()])),
+    basisUpdatedAt: bs.updatedAt,
+    inputs: agg.sources().map((t) => ({
+      id: t.id, quote: t.quote, bid: t.bid?.toString(), ask: t.ask?.toString(), bidSize: t.bidSize?.toString(), askSize: t.askSize?.toString(),
+      price: t.price.toString(), ts: t.ts, recvAt: t.recvAt, hasSourceTs: t.hasSourceTs ?? t.ts !== t.recvAt, seq: t.seq,
+    })),
+    venues: e.venues.map((v) => ({ id: v.id, micro: v.micro.toString(), adjusted: v.adjusted.toString(), depthUsd: v.depthUsd, freshness: v.freshness, weight: v.weight, obsMs: v.obsMs })),
   });
   signLatency.record(performance.now() - t0);
   counters.inc("proof.signed");
@@ -175,11 +206,14 @@ const AUDIT_DIR = path.resolve(process.env.AUDIT_DIR ?? "./data/audit");
 const AUDIT_RETAIN_DAYS = Number(process.env.AUDIT_RETAIN_DAYS ?? 7);
 fs.mkdirSync(AUDIT_DIR, { recursive: true });
 const auditRecent: unknown[] = [];
+let lastAuditError: { at: number; message: string } | null = null;
 const dayFile = (ms: number) => path.join(AUDIT_DIR, `${new Date(ms).toISOString().slice(0, 10)}.jsonl`);
 function audit(rec: { tsMs: number } & Record<string, unknown>) {
   auditRecent.push(rec);
   if (auditRecent.length > 500) auditRecent.shift();
-  fs.appendFile(dayFile(rec.tsMs), JSON.stringify(rec) + "\n", (err) => { if (err) counters.inc("audit.writeError"); });
+  fs.appendFile(dayFile(rec.tsMs), JSON.stringify(rec) + "\n", (err) => {
+    if (err) { counters.inc("audit.writeError"); lastAuditError = { at: Date.now(), message: err.message }; log.error({ err: err.message }, "audit write failed"); }
+  });
 }
 function pruneAudit() {
   const cutoff = Date.now() - AUDIT_RETAIN_DAYS * 86_400_000;
@@ -206,7 +240,13 @@ if (ids.includes("mock")) {
     log.info({ source: id, connections: n }, "source started");
   }
 }
-setInterval(() => void signReference().catch((e) => log.error({ err: e.message }, "sign failed")), 250);
+// Sign right after each 250 ms round boundary (aligned, so every round gets its signature when healthy).
+function scheduleSign() {
+  const now = Date.now();
+  const next = (Math.floor(now / ROUND_MS) + 1) * ROUND_MS + 5;
+  setTimeout(() => { void signReference().catch((e) => log.error({ err: e.message }, "sign failed")); scheduleSign(); }, next - now);
+}
+scheduleSign();
 setInterval(publish, 500); // heartbeat so consumers see staleness even when feeds go quiet
 
 /* ------------------------------------------------------------------ server */
@@ -217,9 +257,11 @@ const server = http.createServer((req, res) => {
   const json = (code: number, body: unknown) => { res.writeHead(code, { "content-type": "application/json", ...cors }); res.end(JSON.stringify(body)); };
   const now = Date.now();
   if (url.pathname === "/health" || url.pathname === "/feed/health") {
-    const ok = latestSnapshot?.quality === "OK";
+    // Healthy = an OK multi-venue quorum. DEGRADED rounds are still signed for settlement but never open trades.
+    const ok = latestSnapshot?.quality === "OK" && !(lastAuditError && now - lastAuditError.at < 60_000);
     return json(ok ? 200 : 503, {
       ok, quality: latestSnapshot?.quality ?? "NONE", proofAgeMs: latestProof ? now - latestProof.tsMs : null,
+      proofQuality: latestProof?.quality ?? null, model: MODEL_VERSION, lastAuditError, rejectedTicks: agg.rejected,
       sources: healthViews(now), index: (latestSnapshot as { availability?: unknown } | null)?.availability ?? null,
     });
   }
@@ -251,6 +293,12 @@ const server = http.createServer((req, res) => {
   }
   if (url.pathname === "/snapshot") return json(latestSnapshot ? 200 : 503, latestSnapshot ?? { error: "no snapshot" });
   if (url.pathname === "/proof/latest") return json(latestProof ? 200 : 503, latestProof ?? { error: "no proof" });
+  if (url.pathname === "/proof/after") {
+    // The first signed round strictly after `round` (settlement of a close request), if we have it yet.
+    const after = Number(url.searchParams.get("round"));
+    for (let r = after + 1; r <= after + 40; r++) { const p = proofsByRound.get(r); if (p) return json(200, p); }
+    return json(404, { error: "no signed round after that yet" });
+  }
   if (!PROD && req.method === "POST" && url.pathname === "/debug/drop") {
     // Failover drill (non-production): kill one connection and watch the other keep the feed alive.
     const h = handles.get(url.searchParams.get("source") ?? "");

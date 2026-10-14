@@ -21,6 +21,8 @@ export interface SourceDef {
   ping?: { payload: unknown; everyMs: number };
   /** Reconnect a connection proactively after this long (staggered across connections). */
   rotateMs?: number;
+  /** true when the venue's messages carry the exchange's own timestamp (freshness is then measured from it) */
+  sourceTs: boolean;
 }
 
 const s = (x: unknown) => parsePrice(String(x));
@@ -49,6 +51,7 @@ export const SOURCES: Record<string, SourceDef> = {
     },
     ping: { payload: { method: "ping" }, everyMs: 20_000 }, // server closes after 60 s idle
     rotateMs: 6 * 60 * 60 * 1000,
+    sourceTs: true,
   },
   binance: {
     id: "binance", name: "Binance BTC/USDT spot", quote: "USDT",
@@ -59,6 +62,8 @@ export const SOURCES: Record<string, SourceDef> = {
     ],
     parse: (m, recvAt) => (m.b && m.a ? { ...bboFrom(m.b, m.B, m.a, m.A), ts: recvAt, seq: Number(m.u) } : null),
     rotateMs: 23 * 60 * 60 * 1000, // Binance force-closes connections at 24 h
+    // bookTicker has no event time: freshness falls back to receipt time; ordering uses the update id (u).
+    sourceTs: false,
   },
   coinbase: {
     id: "coinbase", name: "Coinbase BTC-USD", quote: "USD", urls: ["wss://ws-feed.exchange.coinbase.com"],
@@ -66,6 +71,7 @@ export const SOURCES: Record<string, SourceDef> = {
     parse: (m) => (m.type === "ticker" && m.best_bid && m.best_ask
       ? { ...bboFrom(m.best_bid, m.best_bid_size ?? "0", m.best_ask, m.best_ask_size ?? "0"), ts: Date.parse(m.time), seq: m.sequence }
       : null),
+    sourceTs: true,
   },
   kraken: {
     id: "kraken", name: "Kraken BTC/USD", quote: "USD", urls: ["wss://ws.kraken.com/v2"],
@@ -74,6 +80,7 @@ export const SOURCES: Record<string, SourceDef> = {
       ? { ...bboFrom(m.data[0].bid, m.data[0].bid_qty, m.data[0].ask, m.data[0].ask_qty), ts: recvAt }
       : null),
     ping: { payload: { method: "ping" }, everyMs: 20_000 },
+    sourceTs: false, // ticker v2 has no timestamp: receipt time
   },
   okx: {
     id: "okx", name: "OKX BTC-USDT spot", quote: "USDT", urls: ["wss://ws.okx.com:8443/ws/v5/public"],
@@ -82,6 +89,7 @@ export const SOURCES: Record<string, SourceDef> = {
       ? { ...bboFrom(m.data[0].bids[0][0], m.data[0].bids[0][1], m.data[0].asks[0][0], m.data[0].asks[0][1]), ts: Number(m.data[0].ts), seq: Number(m.data[0].seqId) }
       : null),
     ping: { payload: "ping", everyMs: 20_000 },
+    sourceTs: true,
   },
   bybit: {
     id: "bybit", name: "Bybit BTCUSDT spot", quote: "USDT", urls: ["wss://stream.bybit.com/v5/public/spot"],
@@ -90,6 +98,7 @@ export const SOURCES: Record<string, SourceDef> = {
       ? { ...bboFrom(m.data.b[0][0], m.data.b[0][1], m.data.a[0][0], m.data.a[0][1]), ts: Number(m.ts), seq: Number(m.data.u) }
       : null),
     ping: { payload: { op: "ping" }, everyMs: 20_000 },
+    sourceTs: true,
   },
 };
 
@@ -212,6 +221,7 @@ export function connectSource(
       const accepted = onTick({
         id: def.id, name: def.name, quote: def.quote, price: r.price, bid: r.bid, ask: r.ask, bidSize: r.bidSize, askSize: r.askSize,
         ts: Number.isFinite(r.ts) ? r.ts : recvAt, recvAt, seq: r.seq ?? ++fallbackSeq,
+        hasSourceTs: def.sourceTs && Number.isFinite(r.ts) && r.ts !== recvAt,
       });
       health.onTick(recvAt, accepted);
     });
@@ -237,7 +247,7 @@ export function connectSource(
 
 /**
  * MOCK sources — local tests only (refused in production by config). Deterministic random walk
- * with sizes, emitted as two "USD" venues, plus shock/set controls.
+ * with sizes, emitted as three "USD" venues (enough for the opening quorum), plus shock/set controls.
  */
 export function startMockSources(onTick: (t: SourceTick) => boolean, base = 100_000n * 10n ** 8n) {
   let price = base;
@@ -249,9 +259,9 @@ export function startMockSources(onTick: (t: SourceTick) => boolean, base = 100_
     price += (price * BigInt(rand())) / 100_000_000n;
     const now = Date.now();
     seq++;
-    for (const [id, off] of [["mock-a", 0n], ["mock-b", 1_000_000n]] as const) {
+    for (const [id, off] of [["mock-a", 0n], ["mock-b", 1_000_000n], ["mock-c", 500_000n]] as const) {
       const p = price + off;
-      onTick({ id, name: `MOCK ${id} (test only)`, quote: "USD", price: p, bid: p - 50_000_000n, ask: p + 50_000_000n, bidSize: one, askSize: one, ts: now, recvAt: now, seq });
+      onTick({ id, name: `MOCK ${id} (test only)`, quote: "USD", price: p, bid: p - 50_000_000n, ask: p + 50_000_000n, bidSize: one, askSize: one, ts: now, recvAt: now, seq, hasSourceTs: true });
     }
   }, 100);
   return {

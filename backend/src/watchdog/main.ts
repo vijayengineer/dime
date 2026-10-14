@@ -6,9 +6,12 @@ import { makeChain, PROTOCOL_STATES } from "../chain/chain";
 import { Executor } from "../chain/executor";
 
 /**
- * Independent watchdog. Escalates only toward LESS risk: if the price reference stays stale
- * while the protocol is OPEN, the guardian moves it to ORACLE_HOLD. Reopening is an admin
- * decision (runbook), never automatic. Alerts are structured error logs (+ optional webhook).
+ * Independent watchdog. Escalates only toward LESS risk:
+ *  - price reference stale while OPEN → guardian sets ORACLE_HOLD;
+ *  - keeper unable to act (its health reports chain/price/gas/queue/action failures) for longer than
+ *    WATCHDOG_KEEPER_HOLD_MS while OPEN → guardian sets CLOSE_ONLY, so no new risk opens without working
+ *    liquidations and protection (audit M-07).
+ * Reopening is an admin decision (runbook), never automatic. Alerts are structured error logs (+ optional webhook).
  */
 const cfg = loadConfig();
 const c = makeChain(cfg);
@@ -19,8 +22,11 @@ const pricingHttp = cfg.PRICING_URL.replace(/^ws/, "http").replace("/internal", 
 const apiHttp = `http://${cfg.API_HOST}:${cfg.API_PORT}`;
 const keeperHttp = `http://127.0.0.1:${process.env.KEEPER_PORT ?? 8730}`;
 const MIN_GAS_WEI = BigInt(process.env.WATCHDOG_MIN_GAS_WEI ?? "100000000000000000"); // 0.1 MON
+const KEEPER_HOLD_MS = Number(process.env.WATCHDOG_KEEPER_HOLD_MS ?? 120_000);
 let staleSince: number | null = null;
 let held = false;
+let keeperBadSince: number | null = null;
+let closeOnlySet = false;
 
 async function probe(url: string) {
   try { const r = await fetch(url, { signal: AbortSignal.timeout(1500) }); return { ok: r.ok, body: await r.json().catch(() => null) }; }
@@ -43,7 +49,7 @@ async function tick() {
     if (st === "OPEN" && Date.now() - staleSince > cfg.WATCHDOG_STALE_HOLD_MS && !held) {
       await alert("PRICE_STALE", { proofAge, since: staleSince });
       if (guardian) {
-        const r = await guardian.submit("SET_STATE", "ORACLE_HOLD", "setProtocolState", [2]);
+        const r = await guardian.submit("SET_STATE", "ORACLE_HOLD", "setProtocolState", [2], { priority: 0 });
         held = r.status === "INCLUDED";
         await alert("ORACLE_HOLD_SET", r);
       }
@@ -53,7 +59,18 @@ async function tick() {
     held = false;
   }
   if (!api.ok) await alert("API_DOWN", api.body);
-  if (!keeper.ok) await alert("KEEPER_DOWN", keeper.body);
+  if (!keeper.ok) {
+    keeperBadSince ??= Date.now();
+    await alert("KEEPER_UNABLE", keeper.body);
+    if (st === "OPEN" && Date.now() - keeperBadSince > KEEPER_HOLD_MS && !closeOnlySet && guardian) {
+      const r = await guardian.submit("SET_STATE", "CLOSE_ONLY", "setProtocolState", [1], { priority: 0 });
+      closeOnlySet = r.status === "INCLUDED";
+      await alert("CLOSE_ONLY_SET", { reason: "keeper unable to act", since: keeperBadSince, result: r });
+    }
+  } else {
+    keeperBadSince = null;
+    closeOnlySet = false;
+  }
   for (const role of ["relayer", "keeper"] as const) {
     const addr = role === "relayer" ? cfg.manifest.relayer : (keeper.body as { address?: `0x${string}` } | null)?.address;
     if (!addr) continue;

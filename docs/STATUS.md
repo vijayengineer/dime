@@ -1,5 +1,7 @@
 # Status: what's completed, mocked, tested and blocked
 
+> **Current (2026-10-14):** live on Monad mainnet, invite-only. The October 2026 audit is remediated in code — contracts 89 passing, backend 43, app 26, end-to-end 18/18 — see [AUDIT-REMEDIATION.md](AUDIT-REMEDIATION.md). The v2 contracts must be deployed for the contract-level fixes to take effect. The history below is kept as written.
+
 _As of 2026-10-12. Path: testnet → founder-only mainnet commissioning → public mainnet
 (see BACKEND_BRIEF.md, DEPLOYMENT.md)._
 

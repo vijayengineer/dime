@@ -51,7 +51,11 @@ export class EventWatcher extends EventEmitter {
   private async handle(raw: Log[]) {
     const events = parseEventLogs({ abi: ABI, logs: raw });
     const rightsByTx = new Map<string, bigint>();
-    for (const e of events) if (e.eventName === "DimeIssued") rightsByTx.set(`${e.transactionHash}:${(e.args as { user: string }).user.toLowerCase()}`, (e.args as { amount: bigint }).amount);
+    const cappedById = new Map<string, boolean>();
+    for (const e of events) {
+      if (e.eventName === "DimeIssued") rightsByTx.set(`${e.transactionHash}:${(e.args as { user: string }).user.toLowerCase()}`, (e.args as { amount: bigint }).amount);
+      if (e.eventName === "SettlementDetail") cappedById.set(String((e.args as { id: string }).id).toLowerCase(), Boolean((e.args as { capped: boolean }).capped));
+    }
     const blockTimes = new Map<bigint, number>();
     const tsOf = async (b: bigint) => {
       if (!blockTimes.has(b)) blockTimes.set(b, Number((await this.c.pub.getBlock({ blockNumber: b })).timestamp) * 1000);
@@ -70,6 +74,9 @@ export class EventWatcher extends EventEmitter {
         this.emit("opened", { id, user: String(a.user).toLowerCase(), txHash: e.transactionHash, block: e.blockNumber });
       } else if (e.eventName === "HouseReservationChanged") {
         this.store.setReservation(String(a.id), String(a.newReservation));
+      } else if (e.eventName === "CloseCommitted") {
+        this.store.setCloseCommit(String(a.id), Number(a.committedAt));
+        this.emit("closeCommitted", { id: String(a.id).toLowerCase(), user: String(a.user).toLowerCase(), committedAt: Number(a.committedAt) });
       } else if (e.eventName === "PositionSettled") {
         const id = String(a.id).toLowerCase();
         const p = this.store.getPosition(id);
@@ -81,7 +88,7 @@ export class EventWatcher extends EventEmitter {
           collateral: p?.collateral ?? "0", leverage: p?.leverage ?? 0, entryPrice: p?.entry ?? "0", exitPrice: String(a.exitPrice),
           grossPnl: gross.toString(), fee: String(a.fee), netPnl: String(a.netPnl), returned: String(a.returned),
           reason: REASONS[Number(a.reason)], rightsIssued: String(rightsByTx.get(`${e.transactionHash}:${user}`) ?? 0n),
-          closedAt: await tsOf(e.blockNumber), closeTx: e.transactionHash, capped: false, // cap flag not in event; UI derives from P&L vs collateral
+          closedAt: await tsOf(e.blockNumber), closeTx: e.transactionHash, capped: cappedById.get(id) ?? false, // SettlementDetail (audit M-09)
         };
         this.emit("settled", s);
       }

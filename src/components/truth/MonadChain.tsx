@@ -32,14 +32,18 @@ function useVerifiedPrices() {
       try {
         market ??= await rpc().readContract({ address: MAINNET.protocol, abi: dimeAbi, functionName: "BTC_MARKET" });
         const r = await fetch(`${MAINNET.api}/feed/audit?limit=1`);
-        const rec = ((await r.json()) as { records: { tsMs: number; price: string; sig: Hex }[] }).records.at(-1);
+        const rec = ((await r.json()) as { records: { tsMs: number; round: number; quality: "OK" | "DEGRADED"; sources: number; obsMs: number; price: string; sig: Hex }[] }).records.at(-1);
         if (rec && rec.tsMs > lastTs) {
           lastTs = rec.tsMs;
-          const payload = encodeAbiParameters([{ type: "uint256" }, { type: "uint64" }, { type: "bytes" }], [BigInt(rec.price), BigInt(rec.tsMs), rec.sig]);
+          // The exact signed round (price, time, round, quality, venues, observation time) the contract checks.
+          const payload = encodeAbiParameters(
+            [{ type: "uint256" }, { type: "uint64" }, { type: "uint64" }, { type: "uint8" }, { type: "uint8" }, { type: "uint64" }, { type: "bytes" }],
+            [BigInt(rec.price), BigInt(rec.tsMs), BigInt(rec.round), rec.quality === "OK" ? 0 : 1, rec.sources, BigInt(rec.obsMs), rec.sig],
+          );
           const t0 = performance.now();
           const [ok, block] = await Promise.all([
             rpc().readContract({ address: MAINNET.verifier, abi: priceVerifierAbi, functionName: "verify", args: [market, payload] })
-              .then(([p, ts]) => p === BigInt(rec.price) && Number(ts) === rec.tsMs).catch(() => false),
+              .then((d) => d.price === BigInt(rec.price) && Number(d.tsMs) === rec.tsMs).catch(() => false),
             rpc().getBlockNumber({ cacheTime: 0 }).catch(() => null),
           ]);
           const v: Verified = { price: BigInt(rec.price), tsMs: rec.tsMs, ok, block, checkMs: Math.round(performance.now() - t0), sig: rec.sig };

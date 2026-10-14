@@ -42,7 +42,7 @@ const Env = z.object({
   PRICING_URL: z.string().default("ws://127.0.0.1:8710/internal"),
   MAX_SOURCE_AGE_MS: z.coerce.number().default(2000),
   MAX_DISAGREEMENT_BPS: z.coerce.number().default(15),
-  MIN_SOURCES: z.coerce.number().default(2),
+  MIN_SOURCES: z.coerce.number().min(3).default(3), // OK quorum; the contract enforces the same for opens (audit H-04)
   API_PORT: z.coerce.number().default(8720),
   API_HOST: z.string().default("127.0.0.1"),
   CORS_ORIGINS: z.string().default("http://localhost:3000"),
@@ -56,8 +56,11 @@ const Env = z.object({
   FAUCET_KEY_FILE: z.string().optional(),
   FAUCET_DRIP_WEI: z.coerce.bigint().default(100_000_000_000_000_000n),
   FAUCET_MIN_BALANCE_WEI: z.coerce.bigint().default(20_000_000_000_000_000n),
+  FAUCET_DAILY_BUDGET_WEI: z.coerce.bigint().default(3_000_000_000_000_000_000n), // 3 MON/day across all wallets (audit M-08)
   MAX_QUEUE_PER_BUCKET: z.coerce.number().default(100),
   RATE_LIMIT_PER_MIN: z.coerce.number().default(600),
+  // Only this reverse-proxy hop may set X-Forwarded-For (Caddy on the same host). Comma-separated IPs/CIDRs (audit M-06).
+  TRUST_PROXY: z.string().default("127.0.0.1,::1"),
   KEEPER_INTERVAL_MS: z.coerce.number().default(1000),
   WATCHDOG_INTERVAL_MS: z.coerce.number().default(2000),
   WATCHDOG_STALE_HOLD_MS: z.coerce.number().default(10000),

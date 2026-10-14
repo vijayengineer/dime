@@ -82,6 +82,9 @@ export function OrderTicket({
   useEffect(() => () => onPreview(null), [onPreview]);
 
   const notional = notionalOf(margin, leverage);
+  // The house pays at most its reservation for this trade (audit M-09): shown before signing.
+  const winCapGross = margin * BigInt(params.houseReservationMultiple);
+  const winCapNet = winCapGross - (winCapGross * BigInt(params.profitFeeBps) + 9_999n) / 10_000n;
   const ex = exampleNetProfit(margin, leverage, 0.05, params.profitFeeBps);
   const free = balances?.free ?? 0n;
   const blockers: string[] = [];
@@ -151,6 +154,7 @@ export function OrderTicket({
         <dt className="muted" style={{ fontSize: 12.5 }}>after {pct(params.profitFeeBps, 0)} fee on profit</dt>
         <dd className="muted" style={{ fontSize: 12.5 }}>fee {usd(ex.fee, 3)}</dd>
         <dt>Max loss</dt><dd>{usd(margin)} <span className="muted">(your margin)</span></dd>
+        <dt>Max win</dt><dd>{usd(winCapNet)} <span className="muted">net, unless the house reserves more</span></dd>
       </dl>
 
       <CapacityLine quote={quote} err={quoteErr} />
@@ -159,7 +163,8 @@ export function OrderTicket({
         <summary>How execution works</summary>
         <ul>
           <li><strong>The house fills you instantly.</strong> The house reserve takes the other side at the verified price as soon as you sign.</li>
-          <li>For each trade the house sets aside {params.houseReservationMultiple}× your margin to cover your winnings, so the biggest margin on offer depends on how much of the reserve is free. It may close a position early if your gain nears that amount.</li>
+          <li><strong>Your win is capped.</strong> For each trade the house sets aside {params.houseReservationMultiple}× your margin ({usd(winCapGross)} gross, {usd(winCapNet)} after the fee). That is the most a settlement pays. When your gain nears it, the keeper tries to reserve another {params.houseReservationMultiple}× from free capacity; if there isn&apos;t any, your position is closed early at the verified price and paid in full up to the cap.</li>
+          <li>The biggest margin on offer depends on how much of the reserve is free.</li>
           <li>Your margin is the most you can lose. Whole tickets only: no partial fills.</li>
           <li>Price tolerance is set for you (inside ¼ of the liquidation distance) and shown before you sign. If the price moves past it, nothing opens and your margin stays free.</li>
         </ul>
@@ -227,6 +232,11 @@ function ReviewSheet({ open, onClose, quote, params }: { open: boolean; onClose:
         <dt>Worst accepted entry</dt><dd>{price(quote.priceLimit)}</dd>
         <dt>Liquidation near</dt><dd>{price(quote.liquidationPrice)}</dd>
         <dt>Fee</dt><dd>{pct(quote.feeBps, 0)} of positive P&amp;L</dd>
+        {!d.routes.matched && (() => {
+          const g = d.collateral * BigInt(params.houseReservationMultiple);
+          const n = g - (g * BigInt(quote.feeBps) + 9_999n) / 10_000n;
+          return <><dt>Max win</dt><dd>{usd(n)} net <span className="muted">({usd(g)} gross)</span></dd></>;
+        })()}
         <dt>Execution</dt><dd style={{ fontFamily: "var(--font-body)" }}>{!d.routes.matched ? "House, instant" : `Match only · ${d.matchWindowMs / 1000}s`}</dd>
         <dt>Price tolerance</dt><dd>{pct(d.slippageBps, 2)}</dd>
         <dt>Request expires</dt><dd>{params.intentTtlMs / 1000}s after signing</dd>
@@ -234,7 +244,8 @@ function ReviewSheet({ open, onClose, quote, params }: { open: boolean; onClose:
       <div className="chalk-rule" />
       <ul className="note" style={{ paddingLeft: 18, display: "grid", gap: 6 }}>
         {d.routes.matched && <li>If matched, your counterparty can close at any time, which settles your position too. Your win is capped at their margin{params.matchedGapBackstop > 0n ? " plus the reserved backstop" : ""}.</li>}
-        {d.routes.houseFallback && <li>If backed by the house, it may be closed early under disclosed reserve-protection rules. Finite reserves cannot guarantee every payout.</li>}
+        {d.routes.houseFallback && <li>Backed by the house: a settlement pays at most the amount reserved for you ({params.houseReservationMultiple}× your margin) unless more is reserved first. Near that cap the position may be closed early at the verified price. Finite reserves cannot guarantee every payout.</li>}
+        <li>Your close settles at the verified price just after you ask, not at a price you pick.</li>
         <li>At {d.leverage}×, a {pct(Math.round(((10_000 - params.maintenanceBps) / d.leverage)), 3)} move against you liquidates the position and your margin is lost.</li>
         <li>Matched and house routes are not economically identical.</li>
       </ul>

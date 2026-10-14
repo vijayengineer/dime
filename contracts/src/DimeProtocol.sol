@@ -18,13 +18,18 @@ interface IDimeMintable is IERC20 {
     function mint(address to, uint256 amount) external;
 }
 
-/// @title DimeProtocol (v1)
+/// @title DimeProtocol (v2)
 /// @notice Isolated-margin BTC positions against the house reserve or a matched counterparty,
 ///         plus non-transferable earnings rights on eligible house-trade losses.
 /// @dev Single contract exposing all IDime modules. Rounding: amounts owed TO a trader round
 ///      toward -inf, amounts owed BY a trader and fees round up; dust accrues to the house reserve.
 ///      Reward-index dust stays in the claims pool. See docs/CONTRACTS.md.
 ///      Invariant: token.balanceOf(this) == totalFree + totalLocked + reserve + fundedUnclaimed.
+///      Settlement price policy (audit H-01): no caller picks the price. Opens need a fresh OK multi-venue
+///      round. A close settles at one of the first CLOSE_ROUND_SLACK rounds after its request time (relayed)
+///      or after its on-chain commit (direct). Liquidation, protection and wind-down use the keeper's
+///      current round; anyone may act only after the keeper has been silent for KEEPER_ESCAPE_SECONDS.
+///      Any settlement at or past the liquidation price settles as a liquidation (audit M-02).
 contract DimeProtocol is
     IDimeVault, IDimePositions, IDimeHouse, IDimeRights, IDimeConfig, EIP712, AccessControl, ReentrancyGuard
 {
@@ -33,18 +38,31 @@ contract DimeProtocol is
     /* ------------------------------------------------------------------ constants */
     bytes32 public constant RELAYER_ROLE = keccak256("RELAYER_ROLE");
     bytes32 public constant GUARDIAN_ROLE = keccak256("GUARDIAN_ROLE");
+    bytes32 public constant KEEPER_ROLE = keccak256("KEEPER_ROLE");
     bytes32 public constant BTC_MARKET = keccak256("BTC-USD");
     bytes32 public constant ORDER_TYPEHASH = keccak256(
         "OrderIntent(address user,bytes32 market,uint8 side,uint128 collateral,uint16 leverage,uint8 routeMask,uint64 matchDeadline,uint128 priceLimit,uint32 configVersion,uint64 expiry,uint256 nonce)"
     );
     bytes32 public constant CLOSE_TYPEHASH =
-        keccak256("CloseRequest(address user,bytes32 positionId,uint64 expiry,uint256 nonce)");
+        keccak256("CloseRequest(address user,bytes32 positionId,uint64 requestedAtMs,uint64 expiry,uint256 nonce)");
     uint8 internal constant ROUTE_MATCHED = 1;
     uint8 internal constant ROUTE_HOUSE = 2;
     uint256 internal constant BPS = 1e4;
     /// block.timestamp has 1s granularity; price timestamps are ms.
     uint256 internal constant TS_GRANULARITY_MS = 1000;
     uint256 internal constant MAX_FUTURE_MS = 2000;
+    /// Price rounds are 250 ms (verifier: round = tsMs / ROUND_MS).
+    uint64 public constant ROUND_MS = 250;
+    /// A committed (direct) close settles at one of the first CLOSE_ROUND_SLACK rounds after its commit (2 s):
+    /// the keeper submits the first available; the window only covers a missed round, it is not a price choice.
+    uint64 public constant CLOSE_ROUND_SLACK = 8;
+    /// A relayed close request must reach the chain within this long of being made.
+    uint64 public constant CLOSE_REQUEST_MAX_AGE_MS = 30_000;
+    /// Liquidation / protection / wind-down are keeper-only until the keeper has been silent this long.
+    uint64 public constant KEEPER_ESCAPE_SECONDS = 1 hours;
+    /// If the first rounds after a direct close's commit were missed, the keeper settles at a fresh price
+    /// newer than the commit once this long has passed (so a commit can never get stuck).
+    uint64 public constant COMMIT_ROUND_SECONDS = 10;
 
     /* ------------------------------------------------------------------ errors */
     error BadMarket();
@@ -78,6 +96,12 @@ contract DimeProtocol is
     error BadConfig();
     error ReserveLocked();
     error BelowMinStake();
+    error PriceQuality();
+    error BadRound();
+    error BadRequestTime();
+    error KeeperOnly();
+    error NotCommitted();
+    error AlreadyCommitted();
 
     /* ------------------------------------------------------------------ storage */
     IERC20 internal immutable _token;
@@ -115,6 +139,8 @@ contract DimeProtocol is
     uint32 internal _openHouse;
     uint32 internal _openPairs;
     mapping(address => uint256) public unfundedOwed;
+    mapping(bytes32 => uint64) internal _closeCommit; // positionId => block.timestamp of a direct close request
+    uint64 public lastKeeperHeartbeat;
 
     DimeRights.State internal _r;
     uint256 public distributionsClaimed;
@@ -139,6 +165,7 @@ contract DimeProtocol is
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _r.epoch = 1;
         _r.epochStartedAt = uint64(block.timestamp);
+        lastKeeperHeartbeat = uint64(block.timestamp); // escape hatch closed at deploy
         emit VerifierChanged(address(verifier_));
     }
 
@@ -197,7 +224,7 @@ contract DimeProtocol is
         // With matched also permitted, house is only a fallback after the user's window.
         if (it.routeMask & ROUTE_MATCHED != 0 && block.timestamp <= it.matchDeadline) revert MatchWindow();
         _consumeIntent(it, sig);
-        (uint256 px, uint64 ts) = _price(price, 0);
+        (uint256 px, uint64 ts) = _priceOpen(price);
         _checkLimit(it, px);
 
         uint256 reservation = uint256(it.collateral) * _cfg.houseReservationMultiple;
@@ -234,7 +261,7 @@ contract DimeProtocol is
 
         _consumeIntent(longIt, longSig);
         _consumeIntent(shortIt, shortSig);
-        (uint256 px, uint64 ts) = _price(price, 0);
+        (uint256 px, uint64 ts) = _priceOpen(price);
         _checkLimit(longIt, px);
         _checkLimit(shortIt, px);
 
@@ -253,46 +280,93 @@ contract DimeProtocol is
     }
 
     /* ================================================================== closing */
+    /// @notice Relayed close (gasless for the user). Settles at a price round AFTER the signed request time
+    ///         and within CLOSE_REQUEST_MAX_AGE_MS of it — never a round from before the request (audit H-01).
+    ///         The relayer submits the first round after it RECEIVED the request, so a user cannot pick a round
+    ///         by back-dating; the window only bounds the operator.
     function close(CloseRequest calldata req, bytes calldata sig, PriceProof calldata price)
     external
     onlyRole(RELAYER_ROLE)
-    
   {
         _requireState(S_SETTLE);
         if (block.timestamp > req.expiry) revert Expired();
+        uint256 nowMs = block.timestamp * 1000;
+        if (req.requestedAtMs > nowMs + MAX_FUTURE_MS) revert BadRequestTime();
+        if (nowMs > uint256(req.requestedAtMs) + CLOSE_REQUEST_MAX_AGE_MS) revert Expired();
         if (_nonceUsed[req.user][req.nonce]) revert NonceUsed();
         bytes32 digest = _hashTypedDataV4(keccak256(abi.encode(CLOSE_TYPEHASH, req)));
         if (!SignatureChecker.isValidSignatureNow(req.user, digest, sig)) revert BadSignature();
         _nonceUsed[req.user][req.nonce] = true;
         Position memory p = _get(req.positionId);
         if (p.user != req.user) revert NotOwner();
-        _closePosition(p, price, CloseReason.USER);
+        uint64 first = req.requestedAtMs / ROUND_MS + 1;
+        uint64 last = first + CLOSE_REQUEST_MAX_AGE_MS / ROUND_MS - 1;
+        _closePosition(p, _priceInRounds(price, first, last, p.openedAtMs), CloseReason.USER);
     }
 
-    function closeOwn(bytes32 positionId, PriceProof calldata price) external {
+    /// @notice Direct close without the relayer: commit now, settle at the first price rounds after this block.
+    function requestClose(bytes32 positionId) external {
         _requireState(S_SETTLE);
         Position memory p = _get(positionId);
         if (p.user != msg.sender) revert NotOwner();
-        _closePosition(p, price, CloseReason.USER);
+        if (_closeCommit[positionId] != 0) revert AlreadyCommitted();
+        _closeCommit[positionId] = uint64(block.timestamp);
+        emit CloseCommitted(positionId, msg.sender, uint64(block.timestamp));
     }
 
-    /// @notice Permissionless. Not available during ORACLE_HOLD.
+    /// @notice Keeper settles a committed close at the first rounds after the commit block. If the keeper
+    ///         has been silent, anyone may settle it at a fresh price newer than the commit.
+    function settleCommittedClose(bytes32 positionId, PriceProof calldata price) external {
+        _requireState(S_SETTLE);
+        uint64 c = _closeCommit[positionId];
+        if (c == 0) revert NotCommitted();
+        Position memory p = _get(positionId);
+        // Rounds that start after the commit block's second: unknown when the commit was sent.
+        uint64 first = ((uint64(c) + 1) * 1000) / ROUND_MS;
+        uint256 px;
+        if (_isKeeper()) {
+            if (block.timestamp <= uint256(c) + COMMIT_ROUND_SECONDS) {
+                px = _priceInRounds(price, first, first + CLOSE_ROUND_SLACK - 1, p.openedAtMs);
+            } else {
+                uint64 nb = (uint64(c) + 1) * 1000;
+                px = _priceCurrent(price, nb > p.openedAtMs ? nb : p.openedAtMs);
+            }
+        } else {
+            if (block.timestamp <= uint256(c) + KEEPER_ESCAPE_SECONDS) revert KeeperOnly();
+            uint64 notBefore = (uint64(c) + 1) * 1000;
+            px = _priceCurrent(price, notBefore > p.openedAtMs ? notBefore : p.openedAtMs);
+        }
+        _closePosition(p, px, CloseReason.USER);
+    }
+
+    function closeCommittedAt(bytes32 positionId) external view returns (uint64) { return _closeCommit[positionId]; }
+
+    /// @notice Keeper liveness. While the keeper is live, only it can liquidate, protect or wind down.
+    function keeperHeartbeat() external onlyRole(KEEPER_ROLE) {
+        lastKeeperHeartbeat = uint64(block.timestamp);
+        emit KeeperHeartbeat(msg.sender, uint64(block.timestamp));
+    }
+
+    /// @notice Keeper-only at the current price; permissionless only if the keeper has been silent.
+    ///         Not available during ORACLE_HOLD.
     function liquidate(bytes32 positionId, PriceProof calldata price) external {
         _requireState(S_SETTLE);
+        _requireKeeperOrEscape();
         Position memory p = _get(positionId);
-        (uint256 px,) = _price(price, p.openedAtMs);
+        uint256 px = _priceCurrent(price, p.openedAtMs);
         if (!_liquidatable(p, px)) revert NotLiquidatable();
         if (p.route == Route.HOUSE) _settleHouse(p, px, CloseReason.LIQUIDATION);
         else _settlePair(p.pairId, px, CloseReason.LIQUIDATION, bytes32(0));
     }
 
-    /// @notice Permissionless reserve protection: extend the reservation from free capacity,
-    ///         otherwise close early at the verified price.
+    /// @notice Reserve protection (keeper, or anyone if the keeper is silent): extend the reservation
+    ///         from free capacity, otherwise close early at the current verified price.
     function protect(bytes32 positionId, PriceProof calldata price) external {
         _requireState(S_SETTLE);
+        _requireKeeperOrEscape();
         Position memory p = _get(positionId);
         if (p.route != Route.HOUSE) revert BadRoute();
-        (uint256 px,) = _price(price, p.openedAtMs);
+        uint256 px = _priceCurrent(price, p.openedAtMs);
         int256 raw = _rawPnl(p, px);
         if (raw < int256((uint256(p.houseReservation) * _cfg.protectionTriggerBps) / BPS)) revert NotTriggered();
         uint256 ext = uint256(p.collateral) * _cfg.houseReservationMultiple;
@@ -305,13 +379,14 @@ contract DimeProtocol is
         }
     }
 
-    /// @notice WIND_DOWN: anyone may settle a bounded batch of positions at a verified price.
+    /// @notice WIND_DOWN: the keeper (or anyone, if the keeper is silent) settles a bounded batch at the current price.
     function windDownSettle(bytes32[] calldata ids, PriceProof calldata price) external {
         _requireState(S_WIND_DOWN);
+        _requireKeeperOrEscape();
         for (uint256 i; i < ids.length; ++i) {
             Position memory p = _positions[ids[i]];
             if (p.user == address(0)) continue; // already settled (e.g. other leg of a pair)
-            (uint256 px,) = _price(price, p.openedAtMs);
+            uint256 px = _priceCurrent(price, p.openedAtMs);
             if (p.route == Route.HOUSE) _settleHouse(p, px, CloseReason.EMERGENCY);
             else _settlePair(p.pairId, px, CloseReason.EMERGENCY, bytes32(0));
         }
@@ -408,6 +483,7 @@ contract DimeProtocol is
                 || cfg.maintenanceBps >= BPS || cfg.houseReservationMultiple == 0 || cfg.protectionTriggerBps == 0
                 || cfg.protectionTriggerBps > BPS || cfg.houseMaxUtilisationBps > BPS || cfg.epochSeconds < 60
                 || cfg.maxPriceAgeMs == 0 || cfg.distributionShareBps > BPS
+                || cfg.minOpenSources == 0 || cfg.maxSourceAgeMs == 0
         ) revert BadConfig();
         cfg.version = _cfg.version + 1;
         _cfg = cfg;
@@ -495,13 +571,52 @@ contract DimeProtocol is
         _requireAllowed(it.user);
     }
 
-    function _price(PriceProof calldata p, uint64 notBeforeMs) internal view returns (uint256 px, uint64 ts) {
-        (px, ts) = verifier.verify(BTC_MARKET, p.payload);
+    function _verify(PriceProof calldata p) internal view returns (PriceData memory d) {
+        d = verifier.verify(BTC_MARKET, p.payload);
+        if (d.price == 0 || d.sources == 0) revert StalePrice();
+        if (d.tsMs > block.timestamp * 1000 + MAX_FUTURE_MS || d.obsMs > uint256(d.tsMs) + MAX_FUTURE_MS) revert PriceFromFuture();
+    }
+
+    function _fresh(uint64 tsMs) internal view {
         uint256 nowMs = block.timestamp * 1000;
-        if (px == 0) revert StalePrice();
-        if (ts > nowMs + MAX_FUTURE_MS) revert PriceFromFuture();
-        if (nowMs > ts && nowMs - ts > uint256(_cfg.maxPriceAgeMs) + TS_GRANULARITY_MS) revert StalePrice();
-        if (ts < notBeforeMs) revert PriceBeforeOpen();
+        if (nowMs > tsMs && nowMs - tsMs > uint256(_cfg.maxPriceAgeMs) + TS_GRANULARITY_MS) revert StalePrice();
+    }
+
+    /// Opening: a fresh round with an OK multi-venue quorum built from fresh exchange data (audit H-03/H-04).
+    function _priceOpen(PriceProof calldata p) internal view returns (uint256, uint64) {
+        PriceData memory d = _verify(p);
+        if (d.quality != 0 || d.sources < _cfg.minOpenSources) revert PriceQuality();
+        _fresh(d.tsMs);
+        uint256 nowMs = block.timestamp * 1000;
+        if (nowMs > d.obsMs && nowMs - d.obsMs > uint256(_cfg.maxSourceAgeMs) + TS_GRANULARITY_MS) revert StalePrice();
+        return (d.price, d.tsMs);
+    }
+
+    /// Keeper actions: the current round (OK or DEGRADED, so settlement keeps working during a feed outage).
+    function _priceCurrent(PriceProof calldata p, uint64 notBeforeMs) internal view returns (uint256) {
+        PriceData memory d = _verify(p);
+        _fresh(d.tsMs);
+        if (d.tsMs < notBeforeMs) revert PriceBeforeOpen();
+        return d.price;
+    }
+
+    /// Closes: a round inside [lo, hi], fixed by the request time rather than chosen by the caller (audit H-01).
+    function _priceInRounds(PriceProof calldata p, uint64 lo, uint64 hi, uint64 notBeforeMs) internal view returns (uint256) {
+        PriceData memory d = _verify(p);
+        if (d.round < lo || d.round > hi) revert BadRound();
+        if (d.tsMs < notBeforeMs) revert PriceBeforeOpen();
+        return d.price;
+    }
+
+    function _isKeeper() internal returns (bool) {
+        if (!hasRole(KEEPER_ROLE, msg.sender)) return false;
+        lastKeeperHeartbeat = uint64(block.timestamp);
+        return true;
+    }
+
+    function _requireKeeperOrEscape() internal {
+        if (_isKeeper()) return;
+        if (block.timestamp <= uint256(lastKeeperHeartbeat) + KEEPER_ESCAPE_SECONDS) revert KeeperOnly();
     }
 
     function _checkLimit(OrderIntent calldata it, uint256 px) internal pure {
@@ -546,8 +661,7 @@ contract DimeProtocol is
         if (p.user == address(0)) revert UnknownPosition();
     }
 
-    function _closePosition(Position memory p, PriceProof calldata price, CloseReason reason) internal {
-        (uint256 px,) = _price(price, p.openedAtMs);
+    function _closePosition(Position memory p, uint256 px, CloseReason reason) internal {
         if (p.route == Route.HOUSE) _settleHouse(p, px, reason);
         else _settlePair(p.pairId, px, reason, p.id);
     }
@@ -567,6 +681,8 @@ contract DimeProtocol is
     }
 
     function _settleHouse(Position memory p, uint256 exit, CloseReason reason) internal {
+        // One boundary rule for every path (audit M-02): at or past the liquidation price it is a liquidation.
+        if (_liquidatable(p, exit)) reason = CloseReason.LIQUIDATION;
         int256 coll = int256(uint256(p.collateral));
         int256 gross = DimeMath.houseGross(
             p.side == Side.LONG, p.collateral, p.leverage, p.entryPrice, exit, p.houseReservation,
@@ -599,6 +715,8 @@ contract DimeProtocol is
         _release(p, returned);
         uint256 issued = DimeRights.recordHouseResult(_r, p.user, net, emissionRate(), _cfg.maxMintPerEpoch);
         if (issued > 0) _dime.mint(address(this), issued); // held by the protocol as the user's pending stake
+        int256 raw = _rawPnl(p, exit);
+        emit SettlementDetail(p.id, raw, reason != CloseReason.LIQUIDATION && raw > int256(uint256(p.houseReservation)));
         emit PositionSettled(p.id, p.user, Route.HOUSE, exit, gross, fee, net, returned, reason);
     }
 
@@ -606,6 +724,8 @@ contract DimeProtocol is
         bytes32[2] memory ids = _pairs[pairId];
         Position memory L = _positions[ids[0]];
         Position memory S = _positions[ids[1]];
+        // Same boundary rule as the house route (audit M-02).
+        if (_liquidatable(L, exit) || _liquidatable(S, exit)) reason = CloseReason.LIQUIDATION;
         bool liq = reason == CloseReason.LIQUIDATION;
         DimeMath.PairResult memory c =
             DimeMath.pair(L.collateral, L.leverage, L.entryPrice, exit, L.maxGrossWin, L.feeBps, liq);
@@ -650,6 +770,7 @@ contract DimeProtocol is
         totalFree += returned;
         delete _active[p.user];
         delete _positions[p.id];
+        delete _closeCommit[p.id];
     }
 
     function _payFromReserve(address user, uint256 amount) internal returns (uint256 paid) {

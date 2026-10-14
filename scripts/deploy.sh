@@ -7,7 +7,7 @@
 #   DIME_GUARDIAN=0x.. DIME_REPORTER=0x.. scripts/deploy.sh
 #   (commissioning additionally needs DIME_COLLATERAL=<canonical USDC on Monad, verified by you>)
 set -euo pipefail
-: "${DIME_STAGE:?}" "${RPC_URL:?}" "${DIME_ADMIN:?}" "${DIME_RELAYER:?}" "${DIME_GUARDIAN:?}" "${DIME_REPORTER:?}"
+: "${DIME_STAGE:?}" "${RPC_URL:?}" "${DIME_ADMIN:?}" "${DIME_RELAYER:?}" "${DIME_GUARDIAN:?}" "${DIME_REPORTER:?}" "${DIME_KEEPER:?}"
 ACCOUNT="${DEPLOYER_ACCOUNT:-dime-deployer}"
 # Signer: a Foundry keystore account (default), or DEPLOYER_KEY_FILE (root-only file on the server).
 # With a key file the key is passed to forge via the environment (DEPLOYER_PK), read inside the

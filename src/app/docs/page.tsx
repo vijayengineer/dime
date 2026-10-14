@@ -45,10 +45,10 @@ const STEPS: { n: number; title: string; img?: string; alt?: string; text: React
 
 const RISKS: [string, string, ReactNode][] = [
   ["Leverage", "At 1000×, a move of about 0.09% against you liquidates the position and you lose your whole margin. It can happen within seconds.", "Your margin is your maximum loss on each trade (isolated margin). The liquidation price is shown before you sign."],
-  ["The price", "Prices are signed by DIME's own pricing service. A wrong or delayed price could open, close or liquidate at the wrong level.", "Six exchanges, liquidity-weighted, stale and outlying quotes dropped; every signature checked on-chain; every price published with its inputs; new trades pause if the feed degrades. It is not yet an independent oracle."],
+  ["The price", "Prices are signed by DIME's own pricing service. A wrong or delayed price could open, close or liquidate at the wrong level.", "Six exchanges, liquidity-weighted, judged by exchange time; opening needs a fresh price from at least 3 venues, enforced on-chain. No one picks a settlement price: closes use the round just after you ask, liquidations the keeper's current round. Every price is published with its inputs. It is not yet an independent oracle."],
   ["Smart contracts", "The contracts are new, unaudited hackathon code. A bug could lose deposited funds.", "Source verified on MonadVision; deposits capped at $1 per wallet during the test."],
   ["The house", "The house reserve is small. It may close a position early if your gain nears what it reserved for you, and it can be full.", "Every trade is capped at $100 of BTC; the house reserves 5× your margin per trade and only offers sizes it can cover. Its reserve and results are on the House page."],
-  ["Operator control", "The admin can change settings and pause trading. DIME's relayer submits trades and the keeper liquidates.", "Each order is signed against a specific settings version. The guardian can only reduce risk; reopening needs the admin."],
+  ["Operator control", "The admin can change settings and pause trading. DIME's relayer submits trades and the keeper liquidates.", "Each order is signed against a specific settings version. The guardian can only reduce risk, and the watchdog stops new trades if the keeper can't act; reopening needs the admin. If the keeper is silent for an hour, anyone can liquidate at a fresh price."],
   ["Outages", "If DIME's servers or Monad are down, you may be unable to open or close a position in the app.", "Funds stay in the contract, and your free balance can be withdrawn straight from your wallet."],
   ["DIME", "DIME may earn nothing, and new issuance dilutes existing holders. It is not a refund and has no guaranteed value.", "Issuance is capped per epoch; payouts only come from new house earnings after earlier house losses are recovered."],
   ["Stablecoin and network", "USDC could lose its peg; Monad could halt or reorganise.", "Outside DIME's control."],
@@ -132,7 +132,8 @@ export default function DocsPage() {
             <ul>
               <li>DIME reads live order books from six exchanges: Binance, OKX, Bybit, Hyperliquid, Coinbase and Kraken.</li>
               <li>It takes a liquidity-weighted median, capped at 40% per venue, adjusts USDT quotes for their basis, and ignores stale or outlying quotes. If too few venues are fresh, the price is marked degraded and new trades pause.</li>
-              <li>The price is signed every 250 ms. The verifier contract on Monad checks that signature whenever a trade opens or closes.</li>
+              <li>The price is signed every 250 ms as a numbered round, together with how many venues it used and how old their data is. The verifier contract on Monad checks it whenever a trade opens or closes, and a trade only opens on a fresh price from at least three venues.</li>
+              <li>No one picks the price a trade settles at: a close uses the round just after you ask, and liquidations use the keeper&apos;s current round.</li>
               <li>Every signed price is published with all of its inputs at <a href="https://api-dime.rndm.io/feed/audit" target="_blank" rel="noreferrer">api-dime.rndm.io/feed/audit</a>, so anyone can recompute it. Watch it live on <Link href="/truth">Truth</Link>.</li>
             </ul>
           </section>

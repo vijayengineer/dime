@@ -32,6 +32,7 @@ describe("fair-value aggregator", () => {
   it("applies the measured USD−USDT basis to USDT venues", () => {
     const a = new Aggregator(base);
     a.update(tick("usd1", "USD", "100000", 1000));
+    a.update(tick("usd2", "USD", "100000", 1000)); // the basis needs two independent USD venues
     a.update(tick("usdt1", "USDT", "100100", 1000));
     const e = a.compute(1100)!;
     expect(e.basis.USDT).toBe(-P("100"));
@@ -186,6 +187,7 @@ describe("fair-value v2 maths", () => {
   it("aligns a perp venue with a measured basis and weights fresher data more", () => {
     const a = new Aggregator({ maxAgeMs: 2000, maxDisagreementBps: 15, minSources: 2 });
     a.update({ id: "spot", name: "s", quote: "USD", price: P("100000"), ts: 1000, recvAt: 1000, seq: 1 });
+    a.update({ id: "spot2", name: "s2", quote: "USD", price: P("100000"), ts: 1000, recvAt: 1000, seq: 1 });
     a.update({ id: "perp", name: "p", quote: "USDC_PERP", price: P("100050"), ts: 1000, recvAt: 1000, seq: 1 });
     const e = a.compute(1000)!;
     expect(e.basis.USDC_PERP).toBe(-P("50"));
@@ -240,6 +242,7 @@ describe("degraded fallback (Hyperliquid only)", () => {
   it("uses Hyperliquid alone, basis-adjusted and flagged, when other venues go stale", () => {
     const a = new Aggregator({ maxAgeMs: 2000, maxDisagreementBps: 15, minSources: 2 });
     a.update(tk("coinbase", "USD", "100000", 1000));
+    a.update(tk("kraken", "USD", "100000", 1000));
     a.update(tk("hyperliquid", "USDC_PERP", "100050", 1000));
     expect(a.compute(1000)!.quality).toBe("OK"); // basis learned: perp −50
     a.update(tk("hyperliquid", "USDC_PERP", "100150", 4000)); // coinbase now stale

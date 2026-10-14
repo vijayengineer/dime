@@ -39,16 +39,23 @@ export interface IntentRow {
 export interface PositionRow {
   id: string; user: string; route: "MATCHED" | "HOUSE"; side: 0 | 1; collateral: string; leverage: number;
   entry: string; liq: string; reservation: string; pair_id: string | null; opened_block: number; open_tx: string;
+  close_commit?: number | null; // block.timestamp of a direct close request awaiting settlement
 }
 
-export type TxStatus = "PREPARED" | "SENT" | "INCLUDED" | "REVERTED" | "FAILED" | "UNKNOWN";
+/**
+ * PREPARED → SIGNED (raw bytes + hash journalled, not yet broadcast) → SENT → INCLUDED | REVERTED.
+ * UNKNOWN = broadcast outcome or receipt unknown (reconciled from receipts and the sender nonce).
+ * DROPPED = the nonce was used by another transaction. FAILED = provably not sent.
+ */
+export type TxStatus = "PREPARED" | "SIGNED" | "SENT" | "INCLUDED" | "REVERTED" | "FAILED" | "UNKNOWN" | "DROPPED";
 export interface TxRow {
   id: string;
-  kind: "OPEN_HOUSE" | "OPEN_MATCHED" | "CLOSE" | "LIQUIDATE" | "PROTECT" | "FUND_EPOCH" | "SET_STATE";
+  kind: "OPEN_HOUSE" | "OPEN_MATCHED" | "CLOSE" | "SETTLE_CLOSE" | "LIQUIDATE" | "PROTECT" | "HEARTBEAT" | "FUND_EPOCH" | "SET_STATE";
   ref: string; // intent ids / position id
   sender: string;
   nonce: number | null;
   hash: string | null;
+  raw: string | null; // signed transaction bytes, journalled before broadcast
   status: TxStatus;
   error: string | null;
   block: number | null;
@@ -56,6 +63,11 @@ export interface TxRow {
   included_at: number | null;
   created_at: number;
   updated_at: number;
+}
+
+export interface GasGrant {
+  address: string; status: "PENDING" | "SENT" | "CONFIRMED" | "FAILED"; wei: string; tx: string | null; error: string | null;
+  created_at: number; updated_at: number;
 }
 
 export class Store {
@@ -95,11 +107,26 @@ export class Store {
       CREATE TABLE IF NOT EXISTS invites (
         address TEXT PRIMARY KEY, invited_at INTEGER NOT NULL, drip_tx TEXT
       );
+      CREATE TABLE IF NOT EXISTS gas_grants (
+        address TEXT PRIMARY KEY, status TEXT NOT NULL, wei TEXT NOT NULL, tx TEXT, error TEXT,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS terms (
         address TEXT NOT NULL, version TEXT NOT NULL, signature TEXT NOT NULL, accepted_at INTEGER NOT NULL,
         PRIMARY KEY (address, version)
       );
     `);
+    this.migrate();
+  }
+
+  private migrate() {
+    const cols = (this.db.prepare("PRAGMA table_info(txs)").all() as { name: string }[]).map((c) => c.name);
+    if (!cols.includes("raw")) this.db.exec("ALTER TABLE txs ADD COLUMN raw TEXT");
+    const pcols = (this.db.prepare("PRAGMA table_info(positions)").all() as { name: string }[]).map((c) => c.name);
+    if (!pcols.includes("close_commit")) this.db.exec("ALTER TABLE positions ADD COLUMN close_commit INTEGER");
+    // Legacy drips (recorded on invites) count as grants, so no wallet gets a second one after upgrade.
+    this.db.exec(`INSERT OR IGNORE INTO gas_grants (address, status, wei, tx, error, created_at, updated_at)
+      SELECT address, 'CONFIRMED', '0', drip_tx, NULL, invited_at, invited_at FROM invites WHERE drip_tx IS NOT NULL`);
   }
 
   /* terms of use: one signed acceptance per wallet and version */
@@ -122,8 +149,32 @@ export class Store {
       return true;
     })();
   }
-  dripTx(address: string) { return (this.db.prepare("SELECT drip_tx FROM invites WHERE address = ?").get(address.toLowerCase()) as { drip_tx: string | null } | undefined)?.drip_tx ?? null; }
-  setDripTx(address: string, tx: string) { this.db.prepare("UPDATE invites SET drip_tx = ? WHERE address = ?").run(tx, address.toLowerCase()); }
+  /* gas grants: an independent ledger keyed by wallet, not tied to invites (audit M-08) */
+  gasGrant(address: string) {
+    return this.db.prepare("SELECT * FROM gas_grants WHERE address = ?").get(address.toLowerCase()) as GasGrant | undefined;
+  }
+  /** Reserve the one grant for this wallet. False if it already has one (in any state but FAILED-without-tx). */
+  reserveGasGrant(address: string, wei: bigint): boolean {
+    return this.db.transaction(() => {
+      const cur = this.gasGrant(address);
+      if (cur && !(cur.status === "FAILED" && !cur.tx)) return false;
+      const now = Date.now();
+      this.db.prepare(`INSERT INTO gas_grants VALUES (?, 'PENDING', ?, NULL, NULL, ?, ?)
+        ON CONFLICT(address) DO UPDATE SET status = 'PENDING', wei = excluded.wei, error = NULL, updated_at = excluded.updated_at`)
+        .run(address.toLowerCase(), wei.toString(), now, now);
+      return true;
+    })();
+  }
+  updateGasGrant(address: string, patch: { status: GasGrant["status"]; tx?: string | null; error?: string | null }) {
+    this.db.prepare("UPDATE gas_grants SET status = ?, tx = COALESCE(?, tx), error = ?, updated_at = ? WHERE address = ?")
+      .run(patch.status, patch.tx ?? null, patch.error ?? null, Date.now(), address.toLowerCase());
+  }
+  /** Total granted (sent or confirmed) since `sinceMs`, for the global daily budget. */
+  gasGrantedSince(sinceMs: number): bigint {
+    const rows = this.db.prepare("SELECT wei FROM gas_grants WHERE status IN ('PENDING','SENT','CONFIRMED') AND created_at >= ?").all(sinceMs) as { wei: string }[];
+    return rows.reduce((s, r) => s + BigInt(r.wei), 0n);
+  }
+  gasGrantsByStatus(status: GasGrant["status"]) { return this.db.prepare("SELECT * FROM gas_grants WHERE status = ?").all(status) as GasGrant[]; }
 
   /* intents */
   insertIntent(r: IntentRow) {
@@ -164,15 +215,18 @@ export class Store {
 
   /* txs */
   insertTx(r: TxRow) {
-    this.db.prepare(`INSERT INTO txs VALUES (@id,@kind,@ref,@sender,@nonce,@hash,@status,@error,@block,@sent_at,@included_at,@created_at,@updated_at)`).run(r);
+    this.db.prepare(`INSERT INTO txs (id, kind, ref, sender, nonce, hash, raw, status, error, block, sent_at, included_at, created_at, updated_at)
+      VALUES (@id,@kind,@ref,@sender,@nonce,@hash,@raw,@status,@error,@block,@sent_at,@included_at,@created_at,@updated_at)`).run(r);
   }
   updateTx(id: string, patch: Partial<TxRow>) {
     const cur = this.db.prepare("SELECT * FROM txs WHERE id = ?").get(id) as TxRow;
     const next = { ...cur, ...patch, updated_at: Date.now() };
-    this.db.prepare(`UPDATE txs SET nonce=@nonce, hash=@hash, status=@status, error=@error, block=@block,
+    this.db.prepare(`UPDATE txs SET nonce=@nonce, hash=@hash, raw=@raw, status=@status, error=@error, block=@block,
       sent_at=@sent_at, included_at=@included_at, updated_at=@updated_at WHERE id=@id`).run(next);
     return next;
   }
+  /** Transactions that carried these intents (ref is a comma-separated intent id list for opens). */
+  txsForRef(ref: string) { return this.db.prepare("SELECT * FROM txs WHERE ref = ? OR ref LIKE ? OR ref LIKE ? ORDER BY created_at").all(ref, `${ref},%`, `%,${ref}`) as TxRow[]; }
   getTx(id: string) { return this.db.prepare("SELECT * FROM txs WHERE id = ?").get(id) as TxRow | undefined; }
   txsByStatus(...st: TxStatus[]) {
     return this.db.prepare(`SELECT * FROM txs WHERE status IN (${st.map(() => "?").join(",")}) ORDER BY created_at`).all(...st) as TxRow[];
@@ -186,13 +240,15 @@ export class Store {
 
   /* positions (index of PositionOpened events; contract state is authoritative) */
   upsertPosition(p: PositionRow) {
-    this.db.prepare(`INSERT INTO positions VALUES (@id,@user,@route,@side,@collateral,@leverage,@entry,@liq,@reservation,@pair_id,@opened_block,@open_tx,0)
-      ON CONFLICT(id) DO NOTHING`).run(p);
+    this.db.prepare(`INSERT INTO positions (id, user, route, side, collateral, leverage, entry, liq, reservation, pair_id, opened_block, open_tx, settled)
+      VALUES (@id,@user,@route,@side,@collateral,@leverage,@entry,@liq,@reservation,@pair_id,@opened_block,@open_tx,0)
+      ON CONFLICT(id) DO NOTHING`).run((({ close_commit: _c, ...row }) => row)(p));
   }
   getPosition(id: string) { return this.db.prepare("SELECT * FROM positions WHERE id = ?").get(id.toLowerCase()) as (PositionRow & { settled: number }) | undefined; }
   openPositions() { return this.db.prepare("SELECT * FROM positions WHERE settled = 0").all() as PositionRow[]; }
   markSettled(id: string) { this.db.prepare("UPDATE positions SET settled = 1 WHERE id = ?").run(id.toLowerCase()); }
   setReservation(id: string, r: string) { this.db.prepare("UPDATE positions SET reservation = ? WHERE id = ?").run(r, id.toLowerCase()); }
+  setCloseCommit(id: string, at: number) { this.db.prepare("UPDATE positions SET close_commit = ? WHERE id = ?").run(at, id.toLowerCase()); }
 
   /* meta */
   getMeta(key: string) { return (this.db.prepare("SELECT value FROM meta WHERE key = ?").get(key) as { value: string } | undefined)?.value; }

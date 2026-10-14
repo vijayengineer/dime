@@ -31,10 +31,12 @@ interface IDimeTypes {
         uint256 nonce;
     }
 
-    /// EIP-712: CloseRequest(address user,bytes32 positionId,uint64 expiry,uint256 nonce)
+    /// EIP-712: CloseRequest(address user,bytes32 positionId,uint64 requestedAtMs,uint64 expiry,uint256 nonce)
+    /// requestedAtMs fixes the settlement price: the first signed price round after it (audit H-01).
     struct CloseRequest {
         address user;
         bytes32 positionId;
+        uint64 requestedAtMs;
         uint64 expiry;
         uint256 nonce;
     }
@@ -42,6 +44,17 @@ interface IDimeTypes {
     /// Opaque payload checked by the configured IPriceVerifier.
     struct PriceProof {
         bytes payload;
+    }
+
+    /// A verified price round. round = tsMs / ROUND_MS; quality 0 = OK (multi-venue quorum), 1 = DEGRADED
+    /// (settlement only); sources = venues used; obsMs = oldest exchange observation behind the price.
+    struct PriceData {
+        uint256 price;
+        uint64 tsMs;
+        uint64 round;
+        uint8 quality;
+        uint8 sources;
+        uint64 obsMs;
     }
 
     struct Position {
@@ -84,6 +97,8 @@ interface IDimeTypes {
         uint128 distributionReserveFloor;
         uint64 epochSeconds;
         uint32 maxPriceAgeMs;
+        uint8 minOpenSources; // opening needs an OK price from at least this many venues (audit H-04)
+        uint32 maxSourceAgeMs; // opening needs exchange observations no older than this (audit H-03)
     }
 
     struct HouseStats {
@@ -140,6 +155,11 @@ interface IDimePositions is IDimeTypes {
         int256 netPnl, uint256 returned, CloseReason reason
     );
     event HouseReservationChanged(bytes32 indexed id, uint256 newReservation);
+    /// The owner asked to close directly (no relayer); settled at the first price round after this block.
+    event CloseCommitted(bytes32 indexed id, address indexed user, uint64 committedAt);
+    /// House settlement detail: the uncapped P&L, and whether the reservation capped the win (audit M-09).
+    event SettlementDetail(bytes32 indexed id, int256 rawGrossPnl, bool capped);
+    event KeeperHeartbeat(address indexed keeper, uint64 at);
 
     function openHouse(OrderIntent calldata intent, bytes calldata sig, PriceProof calldata price) external returns (bytes32 id);
     function openMatched(
@@ -148,7 +168,11 @@ interface IDimePositions is IDimeTypes {
         PriceProof calldata price
     ) external returns (bytes32 longId, bytes32 shortId);
     function close(CloseRequest calldata req, bytes calldata sig, PriceProof calldata price) external;
-    function closeOwn(bytes32 positionId, PriceProof calldata price) external;
+    function requestClose(bytes32 positionId) external;
+    function settleCommittedClose(bytes32 positionId, PriceProof calldata price) external;
+    function closeCommittedAt(bytes32 positionId) external view returns (uint64);
+    function keeperHeartbeat() external;
+    function lastKeeperHeartbeat() external view returns (uint64);
     function liquidate(bytes32 positionId, PriceProof calldata price) external;
     function protect(bytes32 positionId, PriceProof calldata price) external;
     function windDownSettle(bytes32[] calldata positionIds, PriceProof calldata price) external;
@@ -175,9 +199,9 @@ interface IDimeHouse is IDimeTypes {
     function allowlisted(address user) external view returns (bool);
 }
 
-interface IPriceVerifier {
-    /// @return price 8-dec fixed point  @return tsMs source timestamp (ms)
-    function verify(bytes32 market, bytes calldata payload) external view returns (uint256 price, uint64 tsMs);
+interface IPriceVerifier is IDimeTypes {
+    /// @return d the authenticated price round (price 8-dec fixed point, times in ms)
+    function verify(bytes32 market, bytes calldata payload) external view returns (PriceData memory d);
     /// @notice false for operator-controlled references. UIs must label these.
     function isIndependentOracle() external view returns (bool);
     function oracleKind() external view returns (string memory);

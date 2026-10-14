@@ -22,6 +22,7 @@ export const CLOSE_REQUEST_TYPES = {
   CloseRequest: [
     { name: "user", type: "address" },
     { name: "positionId", type: "bytes32" },
+    { name: "requestedAtMs", type: "uint64" },
     { name: "expiry", type: "uint64" },
     { name: "nonce", type: "uint256" },
   ],

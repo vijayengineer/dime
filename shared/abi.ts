@@ -138,6 +138,16 @@ export const dimeAbi = [
             "name": "maxPriceAgeMs",
             "type": "uint32",
             "internalType": "uint32"
+          },
+          {
+            "name": "minOpenSources",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "maxSourceAgeMs",
+            "type": "uint32",
+            "internalType": "uint32"
           }
         ]
       },
@@ -163,6 +173,32 @@ export const dimeAbi = [
         "name": "",
         "type": "bytes32",
         "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "CLOSE_REQUEST_MAX_AGE_MS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "CLOSE_ROUND_SLACK",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
       }
     ],
     "stateMutability": "view"
@@ -208,6 +244,32 @@ export const dimeAbi = [
   },
   {
     "type": "function",
+    "name": "KEEPER_ESCAPE_SECONDS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "KEEPER_ROLE",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "ORDER_TYPEHASH",
     "inputs": [],
     "outputs": [
@@ -228,6 +290,19 @@ export const dimeAbi = [
         "name": "",
         "type": "bytes32",
         "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "ROUND_MS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
       }
     ],
     "stateMutability": "view"
@@ -351,6 +426,16 @@ export const dimeAbi = [
             "name": "maxPriceAgeMs",
             "type": "uint32",
             "internalType": "uint32"
+          },
+          {
+            "name": "minOpenSources",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "maxSourceAgeMs",
+            "type": "uint32",
+            "internalType": "uint32"
           }
         ]
       }
@@ -435,6 +520,11 @@ export const dimeAbi = [
             "internalType": "bytes32"
           },
           {
+            "name": "requestedAtMs",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
             "name": "expiry",
             "type": "uint64",
             "internalType": "uint64"
@@ -469,28 +559,22 @@ export const dimeAbi = [
   },
   {
     "type": "function",
-    "name": "closeOwn",
+    "name": "closeCommittedAt",
     "inputs": [
       {
         "name": "positionId",
         "type": "bytes32",
         "internalType": "bytes32"
-      },
-      {
-        "name": "price",
-        "type": "tuple",
-        "internalType": "struct IDimeTypes.PriceProof",
-        "components": [
-          {
-            "name": "payload",
-            "type": "bytes",
-            "internalType": "bytes"
-          }
-        ]
       }
     ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -966,6 +1050,26 @@ export const dimeAbi = [
             "internalType": "uint32"
           }
         ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "keeperHeartbeat",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "lastKeeperHeartbeat",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
       }
     ],
     "stateMutability": "view"
@@ -1464,6 +1568,19 @@ export const dimeAbi = [
   },
   {
     "type": "function",
+    "name": "requestClose",
+    "inputs": [
+      {
+        "name": "positionId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "revokeRole",
     "inputs": [
       {
@@ -1698,6 +1815,16 @@ export const dimeAbi = [
             "name": "maxPriceAgeMs",
             "type": "uint32",
             "internalType": "uint32"
+          },
+          {
+            "name": "minOpenSources",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "maxSourceAgeMs",
+            "type": "uint32",
+            "internalType": "uint32"
           }
         ]
       }
@@ -1726,6 +1853,31 @@ export const dimeAbi = [
         "name": "v",
         "type": "address",
         "internalType": "contract IPriceVerifier"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "settleCommittedClose",
+    "inputs": [
+      {
+        "name": "positionId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "price",
+        "type": "tuple",
+        "internalType": "struct IDimeTypes.PriceProof",
+        "components": [
+          {
+            "name": "payload",
+            "type": "bytes",
+            "internalType": "bytes"
+          }
+        ]
       }
     ],
     "outputs": [],
@@ -1956,6 +2108,31 @@ export const dimeAbi = [
   },
   {
     "type": "event",
+    "name": "CloseCommitted",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "user",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "committedAt",
+        "type": "uint64",
+        "indexed": false,
+        "internalType": "uint64"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "ConfigActivated",
     "inputs": [
       {
@@ -2131,6 +2308,25 @@ export const dimeAbi = [
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "KeeperHeartbeat",
+    "inputs": [
+      {
+        "name": "keeper",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "at",
+        "type": "uint64",
+        "indexed": false,
+        "internalType": "uint64"
       }
     ],
     "anonymous": false
@@ -2397,6 +2593,31 @@ export const dimeAbi = [
   },
   {
     "type": "event",
+    "name": "SettlementDetail",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "rawGrossPnl",
+        "type": "int256",
+        "indexed": false,
+        "internalType": "int256"
+      },
+      {
+        "name": "capped",
+        "type": "bool",
+        "indexed": false,
+        "internalType": "bool"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "Staked",
     "inputs": [
       {
@@ -2499,12 +2720,27 @@ export const dimeAbi = [
   },
   {
     "type": "error",
+    "name": "AlreadyCommitted",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "BadConfig",
     "inputs": []
   },
   {
     "type": "error",
     "name": "BadMarket",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "BadRequestTime",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "BadRound",
     "inputs": []
   },
   {
@@ -2579,6 +2815,11 @@ export const dimeAbi = [
   },
   {
     "type": "error",
+    "name": "KeeperOnly",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "MatchWindow",
     "inputs": []
   },
@@ -2590,6 +2831,11 @@ export const dimeAbi = [
   {
     "type": "error",
     "name": "NotAllowlisted",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotCommitted",
     "inputs": []
   },
   {
@@ -2620,6 +2866,11 @@ export const dimeAbi = [
   {
     "type": "error",
     "name": "PriceLimit",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PriceQuality",
     "inputs": []
   },
   {
@@ -2726,6 +2977,19 @@ export const priceVerifierAbi = [
   },
   {
     "type": "function",
+    "name": "ROUND_MS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "TAG",
     "inputs": [],
     "outputs": [
@@ -2747,14 +3011,41 @@ export const priceVerifierAbi = [
         "internalType": "bytes32"
       },
       {
-        "name": "price",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "tsMs",
-        "type": "uint64",
-        "internalType": "uint64"
+        "name": "d",
+        "type": "tuple",
+        "internalType": "struct IDimeTypes.PriceData",
+        "components": [
+          {
+            "name": "price",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "tsMs",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "round",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "quality",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "sources",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "obsMs",
+            "type": "uint64",
+            "internalType": "uint64"
+          }
+        ]
       }
     ],
     "outputs": [
@@ -2925,14 +3216,41 @@ export const priceVerifierAbi = [
     ],
     "outputs": [
       {
-        "name": "price",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "tsMs",
-        "type": "uint64",
-        "internalType": "uint64"
+        "name": "d",
+        "type": "tuple",
+        "internalType": "struct IDimeTypes.PriceData",
+        "components": [
+          {
+            "name": "price",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "tsMs",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "round",
+            "type": "uint64",
+            "internalType": "uint64"
+          },
+          {
+            "name": "quality",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "sources",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "obsMs",
+            "type": "uint64",
+            "internalType": "uint64"
+          }
+        ]
       }
     ],
     "stateMutability": "view"
@@ -3035,7 +3353,17 @@ export const priceVerifierAbi = [
   },
   {
     "type": "error",
+    "name": "BadQuality",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "BadReporter",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "BadRound",
     "inputs": []
   },
   {
@@ -3611,19 +3939,6 @@ export const dimeTokenAbi = [
   {
     "type": "function",
     "name": "DEFAULT_ADMIN_ROLE",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "bytes32",
-        "internalType": "bytes32"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "MINTER_ROLE",
     "inputs": [],
     "outputs": [
       {
@@ -4298,6 +4613,11 @@ export const dimeTokenAbi = [
         "internalType": "address"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "NotProtocol",
+    "inputs": []
   },
   {
     "type": "error",

@@ -4,12 +4,15 @@ import { Counters, Latency } from "../metrics";
 import type { IntentRow, IntentStatus, Store } from "../store/db";
 import type { TxResult } from "../chain/executor";
 
-export interface ProofSource { freshProof(maxAgeMs: number): { price: string; tsMs: number; payload: Hex } | null }
+export interface ProofSource { freshProof(maxAgeMs: number, use?: "open" | "settle"): { price: string; tsMs: number; payload: Hex } | null }
 
+/** The executor fetches a fresh opening proof itself when the transaction is actually sent (audit M-05). */
 export interface ExecPort {
-  openMatched(longRow: IntentRow, shortRow: IntentRow, proofPayload: Hex): Promise<TxResult>;
-  openHouse(row: IntentRow, proofPayload: Hex): Promise<TxResult>;
+  openMatched(longRow: IntentRow, shortRow: IntentRow): Promise<TxResult>;
+  openHouse(row: IntentRow): Promise<TxResult>;
 }
+
+class Rollback extends Error {}
 
 /** Per-wallet pre-checks so one bad request can't fail an innocent counterparty. */
 export interface Eligibility { check(row: IntentRow): Promise<string | null> }
@@ -25,7 +28,7 @@ export interface MatcherOptions {
 }
 
 const CAPACITY_ERRORS = new Set(["CapacityUnavailable", "SlotsFull", "ConcentrationLimit"]);
-const PRICE_ERRORS = new Set(["PriceLimit", "StalePrice", "PriceFromFuture"]);
+const PRICE_ERRORS = new Set(["PriceLimit", "StalePrice", "PriceFromFuture", "PriceQuality"]);
 
 export function reasonFor(revert: string | null | undefined): { status: IntentStatus; reason: string } {
   if (!revert) return { status: "REJECTED", reason: "Transaction failed. Nothing was opened." };
@@ -106,7 +109,7 @@ export class Matcher {
     if (this.busy.has(row.id) || !(row.route_mask & 1)) return;
     const nowMs = this.now();
     if (nowMs > row.match_deadline * 1000 - this.opt.submitMarginMs) return;
-    const proof = this.prices.freshProof(this.opt.proofMaxAgeMs);
+    const proof = this.prices.freshProof(this.opt.proofMaxAgeMs, "open");
     if (!proof) return; // retry on next tick
     const px = BigInt(proof.price);
     if (!this.limitOk(row, px)) return;
@@ -121,15 +124,20 @@ export class Matcher {
         const [eL, eS] = await Promise.all([this.elig.check(long), this.elig.check(short)]);
         if (eL) { this.finish(long, "REJECTED", eL); if (long.id === row.id) return; continue; }
         if (eS) { this.finish(short, "REJECTED", eS); if (short.id === row.id) return; continue; }
-        const ok = this.store.db.transaction(() =>
-          this.store.transition(long.id, ["MATCHING"], "SUBMITTED", { route: "MATCHED" }, "Matched")
-          && this.store.transition(short.id, ["MATCHING"], "SUBMITTED", { route: "MATCHED" }, "Matched"))();
+        // Both legs move together or neither does: a false transition must ROLL BACK the first (audit M-04).
+        let ok = false;
+        try {
+          this.store.db.transaction(() => {
+            if (!this.store.transition(long.id, ["MATCHING"], "SUBMITTED", { route: "MATCHED" }, "Matched")) throw new Rollback();
+            if (!this.store.transition(short.id, ["MATCHING"], "SUBMITTED", { route: "MATCHED" }, "Matched")) throw new Rollback();
+          })();
+          ok = true;
+        } catch (e) { if (!(e instanceof Rollback)) throw e; }
         if (!ok) continue;
         this.matchWait.record(nowMs - long.created_at);
         this.matchWait.record(nowMs - short.created_at);
         this.emit(long.id); this.emit(short.id);
-        const fresh = this.prices.freshProof(this.opt.proofMaxAgeMs) ?? proof;
-        const res = await this.exec.openMatched(this.store.getIntent(long.id)!, this.store.getIntent(short.id)!, fresh.payload);
+        const res = await this.exec.openMatched(this.store.getIntent(long.id)!, this.store.getIntent(short.id)!);
         this.afterExec([long.id, short.id], res, "MATCHED");
         return;
       } finally {
@@ -144,9 +152,10 @@ export class Matcher {
     try {
       const e = await this.elig.check(row);
       if (e) return this.finish(row, "REJECTED", e, ["SUBMITTED"]);
-      const proof = this.prices.freshProof(this.opt.proofMaxAgeMs);
-      if (!proof) return this.finish(row, "REJECTED", "No fresh verified price available. Nothing was opened.", ["SUBMITTED"]);
-      const res = await this.exec.openHouse(row, proof.payload);
+      if (!this.prices.freshProof(this.opt.proofMaxAgeMs, "open")) {
+        return this.finish(row, "REJECTED", "No fresh multi-venue price right now. Nothing was opened.", ["SUBMITTED"]);
+      }
+      const res = await this.exec.openHouse(row);
       this.afterExec([row.id], res, "HOUSE");
     } finally {
       this.busy.delete(row.id);
@@ -163,6 +172,7 @@ export class Matcher {
           this.emit(id);
         }
       } else if (res.status === "UNKNOWN") {
+        // Journalled; the executor's reconciler (or the PositionOpened event) settles it either way.
         log.error({ id, hash: res.hash }, "open tx outcome unknown; awaiting reconciliation / events");
       } else if (route === "HOUSE" && res.revert === "MatchWindow") {
         // Chain clock hasn't passed the user's match deadline yet (block timestamps have 1 s

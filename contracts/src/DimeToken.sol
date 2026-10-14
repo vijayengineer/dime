@@ -13,11 +13,8 @@ import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 ///         notice (on-chain event), may cancel only before that time, and once open it is permanent.
 ///         Holding DIME is not a claim on house principal and carries no guaranteed yield.
 contract DimeToken is ERC20, AccessControl {
-    bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
-    /// Admin role for MINTER_ROLE after wiring: held by no one, so the minter set can never change.
-    bytes32 internal constant LOCKED = keccak256("DIME_MINTER_LOCKED");
-
-    /// The protocol (staking venue). Moves to/from it are the only allowed transfers.
+    /// The protocol (staking venue) — the ONLY minter, set once and never changeable (audit M-01: no
+    /// role-based minting, so no admin path can add a minter). Moves to/from it are the only allowed transfers.
     address public protocol;
 
     /// Minimum public notice before transfers can open.
@@ -30,6 +27,7 @@ contract DimeToken is ERC20, AccessControl {
     error NoticeTooShort();
     error AlreadyOpen();
     error NotScheduled();
+    error NotProtocol();
 
     event ProtocolSet(address protocol);
     event TransfersScheduled(uint64 at);
@@ -41,10 +39,8 @@ contract DimeToken is ERC20, AccessControl {
 
     /// @notice One-time wiring to the protocol, which becomes the only minter — permanently.
     function setProtocol(address p) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (protocol != address(0)) revert AlreadySet();
+        if (protocol != address(0) || p == address(0)) revert AlreadySet();
         protocol = p;
-        _grantRole(MINTER_ROLE, p);
-        _setRoleAdmin(MINTER_ROLE, LOCKED); // nobody (incl. admin) can grant or revoke minting again
         emit ProtocolSet(p);
     }
 
@@ -68,7 +64,8 @@ contract DimeToken is ERC20, AccessControl {
         return transfersAt != 0 && block.timestamp >= transfersAt;
     }
 
-    function mint(address to, uint256 amount) external onlyRole(MINTER_ROLE) {
+    function mint(address to, uint256 amount) external {
+        if (msg.sender != protocol || protocol == address(0)) revert NotProtocol();
         _mint(to, amount);
     }
 

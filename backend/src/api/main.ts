@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import cors from "@fastify/cors";
-import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
 import type { WebSocket } from "ws";
 import { createRemoteJWKSet, jwtVerify } from "jose";
@@ -11,13 +10,14 @@ import { loadConfig, readKey } from "../config";
 import { log } from "../log";
 import { Counters, Latency } from "../metrics";
 import { Store, type IntentRow, TERMINAL } from "../store/db";
-import { PriceClient } from "../pricing/client";
+import { PriceClient, roundOf } from "../pricing/client";
 import { BTC_MARKET, makeChain, parseOrder, positionIdFor, PROTOCOL_STATES, revertName, toWire, verifyClose, verifyOrder } from "../chain/chain";
 import { Executor } from "../chain/executor";
 import { EventWatcher, type SettlementWire } from "../chain/events";
 import { Matcher } from "../matching/matcher";
 import { EnvioIndexer } from "../indexer/envio";
 import { GasFaucet } from "../faucet/faucet";
+import { installAuthAndRateLimit, type AuthedRequest } from "./limits";
 import { autoExecution, maxLeverageFor } from "../../../shared/execution";
 import { TERMS_VERSION, termsMessage } from "../../../shared/terms";
 
@@ -82,9 +82,15 @@ const notify = (r: IntentRow) => publish(`intents:${r.user}`, intentWire(r));
 const matcher = new Matcher(
   store, prices,
   {
-    openMatched: (L, S, payload) => relayer.submit("OPEN_MATCHED", `${L.id},${S.id}`, "openMatched",
-      [parseOrder(JSON.parse(L.message)), L.signature, parseOrder(JSON.parse(S.message)), S.signature, { payload }]),
-    openHouse: (r, payload) => relayer.submit("OPEN_HOUSE", r.id, "openHouse", [parseOrder(JSON.parse(r.message)), r.signature, { payload }]),
+    // The opening proof is fetched when the transaction is actually sent (audit M-05).
+    openMatched: (L, S) => relayer.submit("OPEN_MATCHED", `${L.id},${S.id}`, "openMatched", () => {
+      const p = prices.freshProof(2000, "open");
+      return p ? [parseOrder(JSON.parse(L.message)), L.signature, parseOrder(JSON.parse(S.message)), S.signature, { payload: p.payload }] : null;
+    }, { priority: 1, deadlineMs: 4000 }),
+    openHouse: (r) => relayer.submit("OPEN_HOUSE", r.id, "openHouse", () => {
+      const p = prices.freshProof(2000, "open");
+      return p ? [parseOrder(JSON.parse(r.message)), r.signature, { payload: p.payload }] : null;
+    }, { priority: 1, deadlineMs: 4000 }),
   },
   {
     async check(r) {
@@ -111,6 +117,58 @@ const matcher = new Matcher(
 );
 setInterval(() => void matcher.tick().catch((e) => log.error({ err: e.message }, "matcher tick failed")), 200);
 
+/* ---------------------------------------------------------------- request recovery (audit M-03 / M-04) */
+const ZERO = "0x0000000000000000000000000000000000000000";
+const PENDING_TX = new Set(["PREPARED", "SIGNED", "SENT", "UNKNOWN"]);
+/**
+ * Decide a SUBMITTED request from authoritative chain state: its position exists → OPENED; its nonce is
+ * unused and no transaction for it can still land → REJECTED. Waits while a journalled tx is pending.
+ */
+async function resolveSubmitted(r: IntentRow, minAgeMs: number) {
+  if (r.status !== "SUBMITTED" || Date.now() - r.updated_at < minAgeMs) return;
+  const pid = positionIdFor(cfg.CHAIN_ID, cfg.manifest.protocol, r.user as Address, BigInt(r.nonce)).toLowerCase() as Hex;
+  const done = (to: IntentRow["status"], patch: Partial<IntentRow>, note: string) => {
+    if (store.transition(r.id, ["SUBMITTED"], to, patch, note)) notify(store.getIntent(r.id)!);
+  };
+  try {
+    const [pos, used] = await Promise.all([
+      c.pub.readContract({ ...c.protocol, functionName: "getPosition", args: [pid] }),
+      c.pub.readContract({ ...c.protocol, functionName: "nonceUsed", args: [r.user as Address, BigInt(r.nonce)] }),
+    ]);
+    if (pos.user !== ZERO || store.getPosition(pid)) return done("OPENED", { position_id: pid }, "Confirmed from chain state");
+    const txs = store.txsForRef(r.id);
+    const pending = txs.some((t) => PENDING_TX.has(t.status));
+    if (pending && Date.now() - r.updated_at < 10 * 60_000) return; // still reconciling the broadcast
+    if (used) {
+      // Nonce consumed without a known position: it may have opened and closed already; give the indexer time.
+      if (Date.now() - r.updated_at > 2 * 60_000) done("CANCELLED", { reason: "Request was used or cancelled on-chain." }, "Resolved from chain state");
+      return;
+    }
+    done("REJECTED", { reason: "The transaction did not land. Nothing was opened." }, "Resolved from chain state");
+  } catch (e) {
+    log.warn({ id: r.id, err: (e as Error).message.slice(0, 120) }, "could not resolve submitted request yet");
+  }
+}
+async function sweepSubmitted(minAgeMs = 15_000) {
+  for (const r of store.intentsByStatus("SUBMITTED")) await resolveSubmitted(r, minAgeMs);
+}
+relayer.onResolved((t) => {
+  if (t.kind !== "OPEN_HOUSE" && t.kind !== "OPEN_MATCHED") return;
+  for (const id of t.ref.split(",")) { const r = store.getIntent(id); if (r) void resolveSubmitted(r, 0); }
+});
+setInterval(() => void sweepSubmitted().catch(() => {}), 5_000);
+
+/** Plain-language close failures (the contract error names are kept in `revert`). */
+function closeFailure(revert: string | null | undefined, error?: string) {
+  if (revert === "StateForbids") return "Closing is paused while the price is on hold. Your position is unchanged.";
+  if (revert === "BadRound" || error?.includes("no eligible price")) return "The price for your close wasn't ready in time. Your position is unchanged. Please try again.";
+  if (revert === "Expired" || revert === "BadRequestTime") return "That close request expired. Your position is unchanged. Please try again.";
+  if (revert === "UnknownPosition") return "That position is already closed.";
+  if (revert === "NonceUsed") return "That close request was already used.";
+  if (error?.includes("queue")) return "The network is busy. Your position is unchanged. Please try again.";
+  return "Your close didn't go through. Your position is unchanged. Please try again.";
+}
+
 /* ---------------------------------------------------------------- events */
 const watcher = new EventWatcher(c, store, cfg.manifest.deploymentBlock);
 watcher.on("opened", (o: { id: string; user: string; txHash: string; block: bigint }) => {
@@ -121,13 +179,16 @@ watcher.on("opened", (o: { id: string; user: string; txHash: string; block: bigi
 });
 watcher.on("settled", (s: SettlementWire) => publish(`settlements:${s.user}`, s));
 watcher.start();
-setInterval(() => void relayer.reconcile(), 10_000);
+setInterval(() => void relayer.reconcile(), 5_000);
 
 prices.on("snapshot", (s) => publish("price:BTC-USD", s));
 
 /* ---------------------------------------------------------------- invite-only live test + gas top-ups */
 const inviteOnly = !!cfg.INVITE_CODE;
-const faucet = cfg.FAUCET_KEY_FILE ? new GasFaucet(c, readKey(cfg.FAUCET_KEY_FILE, "faucet"), store, cfg.FAUCET_DRIP_WEI, cfg.FAUCET_MIN_BALANCE_WEI) : null;
+const faucet = cfg.FAUCET_KEY_FILE
+  ? new GasFaucet(c, readKey(cfg.FAUCET_KEY_FILE, "faucet"), store, cfg.FAUCET_DRIP_WEI, cfg.FAUCET_MIN_BALANCE_WEI, cfg.FAUCET_DAILY_BUDGET_WEI)
+  : null;
+if (faucet) setInterval(() => void faucet.reconcile().catch(() => {}), 30_000);
 if (inviteOnly) log.info({ max: cfg.MAX_INVITED, joined: store.invitedCount() }, "invite-only live test");
 if (faucet) log.info({ faucet: faucet.address }, "gas faucet enabled");
 const canTrade = (address: string) => store.hasAcceptedTerms(address, TERMS_VERSION) && (!inviteOnly || store.isInvited(address));
@@ -138,31 +199,31 @@ const envio = cfg.ENVIO_API_TOKEN
       DimeProtocol: cfg.manifest.protocol, PriceVerifier: cfg.manifest.verifier,
       ...(cfg.manifest.dimeToken ? { DimeToken: cfg.manifest.dimeToken as Address } : {}),
     }, BigInt(cfg.manifest.deploymentBlock), () => c.pub.getBlockNumber(),
-    async (n) => Number((await c.pub.getBlock({ blockNumber: n })).timestamp) * 1000)
+    async (n) => Number((await c.pub.getBlock({ blockNumber: n })).timestamp) * 1000, store.db)
   : null;
 envio?.start();
 if (!envio) log.warn("ENVIO_API_TOKEN not set: /v1/indexer disabled");
 
 /* ================================================================ http */
-const app = Fastify({ logger: false, bodyLimit: 16 * 1024 });
+// Trust X-Forwarded-For only from the local reverse proxy (Caddy), so req.ip is the real client (audit M-06).
+const app = Fastify({ logger: false, bodyLimit: 16 * 1024, trustProxy: cfg.TRUST_PROXY });
 await app.register(cors, { origin: cfg.CORS_ORIGINS.split(",").map((s) => s.trim()), methods: ["GET", "POST"] });
-await app.register(rateLimit, {
-  max: cfg.RATE_LIMIT_PER_MIN, timeWindow: "1 minute",
-  keyGenerator: (req) => (req as FastifyRequest & { userId?: string }).userId ?? req.ip,
+
+const jwks = cfg.PRIVY_APP_ID ? createRemoteJWKSet(new URL(`https://auth.privy.io/api/v1/apps/${cfg.PRIVY_APP_ID}/jwks.json`)) : null;
+await installAuthAndRateLimit(app, {
+  authMode: cfg.AUTH_MODE, max: cfg.RATE_LIMIT_PER_MIN,
+  verify: async (token) => {
+    if (!jwks) return null;
+    const { payload } = await jwtVerify(token, jwks, { issuer: "privy.io", audience: cfg.PRIVY_APP_ID });
+    return String(payload.sub);
+  },
 });
 await app.register(websocket, { options: { maxPayload: 4096 } });
 
-const jwks = cfg.PRIVY_APP_ID ? createRemoteJWKSet(new URL(`https://auth.privy.io/api/v1/apps/${cfg.PRIVY_APP_ID}/jwks.json`)) : null;
 async function authenticate(req: FastifyRequest, reply: FastifyReply) {
   if (cfg.AUTH_MODE === "none") return;
-  const h = req.headers.authorization;
-  if (!h?.startsWith("Bearer ") || !jwks) return reply.code(401).send(err("UNAUTHENTICATED", "Sign in required"));
-  try {
-    const { payload } = await jwtVerify(h.slice(7), jwks, { issuer: "privy.io", audience: cfg.PRIVY_APP_ID });
-    (req as FastifyRequest & { userId?: string }).userId = String(payload.sub);
-  } catch {
-    return reply.code(401).send(err("UNAUTHENTICATED", "Invalid session"));
-  }
+  const r = req as AuthedRequest;
+  if (!r.userId) return reply.code(401).send(err("UNAUTHENTICATED", r.authError ?? "Sign in required"));
 }
 const err = (code: string, message: string, extra: Record<string, unknown> = {}) => ({ error: { code, message, ...extra } });
 const json = (reply: FastifyReply, code: number, body: unknown) => reply.code(code).header("content-type", "application/json").send(toWire(body));
@@ -172,12 +233,21 @@ app.get("/health", async (_q, reply) => {
   const ok = !!chainState && Date.now() - chainState.at < 5000 && !!proof;
   return json(reply, ok ? 200 : 503, {
     ok, price: prices.snapshot?.quality ?? "NONE", proofAgeMs: prices.proof ? Date.now() - prices.proof.tsMs : null,
+    opensAvailable: !!prices.freshProof(2000, "open"), // settlement continues on DEGRADED; opening needs OK
     chainStateAgeMs: chainState ? Date.now() - chainState.at : null, indexedBlock: watcher.lastBlock, headBlock: watcher.headBlock,
-    relayerQueue: relayer.queueDepth, protocolState: chainState?.state,
+    relayerQueue: relayer.queueDepth, relayerOldestQueuedMs: relayer.oldestQueuedMs, protocolState: chainState?.state,
   });
 });
 
-app.get("/v1/manifest", async (_q, reply) => json(reply, 200, cfg.manifest));
+// Deployment evidence (fixed at deploy) is kept separate from the live, block-stamped configuration (audit L-01).
+app.get("/v1/manifest", async (_q, reply) => json(reply, 200, {
+  ...cfg.manifest,
+  deployment: cfg.manifest,
+  current: chainState ? {
+    readAt: new Date(chainState.at).toISOString(), protocolState: chainState.state, contractAllowlist: chainState.allowlist,
+    applicationInviteOnly: inviteOnly, config: chainState.config, house: chainState.house,
+  } : null,
+}));
 
 app.get("/v1/markets/BTC-USD/history", async (req, reply) => {
   const limit = Math.min(3600, Number((req.query as { limit?: string }).limit ?? 600));
@@ -201,8 +271,8 @@ app.post("/v1/quotes", { preHandler: authenticate, config: { rateLimit: { max: 1
   const t0 = performance.now();
   const d = DraftSchema.safeParse(req.body);
   if (!d.success) return json(reply, 400, err("BAD_REQUEST", d.error.issues[0].message));
-  const proof = prices.freshProof(2500);
-  if (!proof || !chainState) return json(reply, 503, err("PRICE_UNAVAILABLE", "No fresh verified price; new positions are paused"));
+  const proof = prices.freshProof(2500, "open");
+  if (!proof || !chainState) return json(reply, 503, err("PRICE_UNAVAILABLE", "No fresh multi-venue price, so new positions are paused. Closing still works."));
   const { config: k, house: h } = chainState;
   const px = BigInt(proof.price);
   const coll = BigInt(d.data.collateral);
@@ -325,6 +395,11 @@ app.post("/v1/intents/:id/cancel", { preHandler: authenticate, config: { rateLim
 });
 
 /* ---------------------------------------------------------------- close */
+/** Rounds searched after receipt; the contract allows any round within CLOSE_REQUEST_MAX_AGE_MS (30 s) of the request. */
+const CLOSE_ROUND_SLACK = 8;
+/** A signed request time may be this old on arrival (wallet approval), leaving room inside the contract's 30 s. */
+const CLOSE_REQUEST_MAX_LAG_MS = 25_000;
+const CLOSE_REQUEST_FUTURE_MS = 2_000;
 app.post("/v1/close", { preHandler: authenticate, config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, async (req, reply) => {
   const t0 = performance.now();
   const key = String(req.headers["idempotency-key"] ?? "");
@@ -333,13 +408,32 @@ app.post("/v1/close", { preHandler: authenticate, config: { rateLimit: { max: 30
   if (prior) return reply.code(200).header("content-type", "application/json").send(prior);
   const b = req.body as { message?: Record<string, string>; signature?: string };
   if (!b?.message || !b.signature) return json(reply, 400, err("BAD_REQUEST", "message and signature required"));
-  const m = { user: b.message.user as Address, positionId: b.message.positionId as Hex, expiry: BigInt(b.message.expiry), nonce: BigInt(b.message.nonce) };
+  if (!b.message.requestedAtMs) return json(reply, 400, err("BAD_REQUEST", "requestedAtMs required"));
+  const m = {
+    user: b.message.user as Address, positionId: b.message.positionId as Hex, requestedAtMs: BigInt(b.message.requestedAtMs),
+    expiry: BigInt(b.message.expiry), nonce: BigInt(b.message.nonce),
+  };
+  // Settlement price = the first signed round after the server RECEIVED the request (and after the signed
+  // request time), so back-dating the signed time cannot reach a historical round (audit H-01). The signed
+  // time only has to be recent enough to cover wallet approval.
+  const receivedAt = Date.now();
+  const reqMs = Number(m.requestedAtMs);
+  if (reqMs > receivedAt + CLOSE_REQUEST_FUTURE_MS || receivedAt - reqMs > CLOSE_REQUEST_MAX_LAG_MS) {
+    return json(reply, 400, err("BAD_REQUEST_TIME", "That close request is out of date. Please try again (and check your device clock)."));
+  }
   if (!(await verifyClose(c, m, b.signature as Hex))) return json(reply, 401, err("BAD_SIGNATURE", "Signature does not match"));
-  const proof = prices.freshProof(2000);
-  if (!proof) return json(reply, 503, err("PRICE_UNAVAILABLE", "No fresh verified price; close is held until the reference recovers"));
-  const res = await relayer.submit("CLOSE", m.positionId, "close", [m, b.signature, { payload: proof.payload }]);
+  // Closes jump the queue (priority 0); the round is looked up at send time, waiting for it if needed.
+  const res = await relayer.submit("CLOSE", m.positionId, "close", async () => {
+    const r0 = roundOf(Math.max(receivedAt, reqMs));
+    for (let i = 0; i < 25; i++) {
+      const p = await prices.proofAfter(r0, CLOSE_ROUND_SLACK);
+      if (p) return [m, b.signature, { payload: p.payload }];
+      await new Promise((ok) => setTimeout(ok, 100));
+    }
+    return null;
+  }, { priority: 0, deadlineMs: 20_000 });
   metrics.close.record(performance.now() - t0);
-  if (res.status === "FAILED") return json(reply, 409, err("REJECTED", `Close rejected (${res.revert ?? res.error})`, { revert: res.revert }));
+  if (res.status === "FAILED") return json(reply, 409, err("REJECTED", closeFailure(res.revert, res.error), { revert: res.revert }));
   const body = toWire({ txHash: res.hash, status: res.status, block: res.block });
   store.saveIdem(`close:${key}`, body);
   return reply.code(200).header("content-type", "application/json").send(body);
@@ -442,9 +536,9 @@ app.register(async (f) => {
 await app.listen({ port: cfg.API_PORT, host: cfg.API_HOST });
 log.info({ port: cfg.API_PORT, relayer: relayer.address, chainId: cfg.CHAIN_ID, stage: cfg.manifest.stage }, "api up");
 
-// Recover requests that were mid-flight when the process stopped.
-for (const r of store.intentsByStatus("SUBMITTED")) {
-  if (!r.tx_id) log.warn({ id: r.id }, "SUBMITTED intent without tx on start; awaiting event or expiry");
-}
+// Recover requests that were mid-flight when the process stopped: resolve journalled transactions first,
+// then settle every SUBMITTED request from chain state (audit M-03).
+await relayer.reconcile().catch((e) => log.error({ err: (e as Error).message }, "startup reconcile failed"));
+await sweepSubmitted(0);
 process.on("SIGTERM", async () => { watcher.stop(); prices.close(); await app.close(); process.exit(0); });
 export { revertName };

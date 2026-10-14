@@ -328,7 +328,11 @@ export function createLiveServices(env: LiveEnv, wallet: WalletBridge): Services
         if (!acct || !domain) throw new ServiceError("wallet", "not ready", false);
         const id = `close-${positionId}`;
         const t = txUpdate({ id, label: "Close position", stage: "SIGN", startedAt: Date.now(), updatedAt: Date.now() });
-        const message = { user: acct.address, positionId: positionId as Hash, expiry: BigInt(Math.floor(Date.now() / 1000) + 30), nonce: randomNonce() };
+        // requestedAtMs: the close settles at a price round after this time (and after the server receives it).
+        const message = {
+          user: acct.address, positionId: positionId as Hash, requestedAtMs: BigInt(Date.now()),
+          expiry: BigInt(Math.floor(Date.now() / 1000) + 30), nonce: randomNonce(),
+        };
         const w = await wallet.getWalletClient();
         const signature = await w.signTypedData({ account: acct.address, domain, types: CLOSE_REQUEST_TYPES, primaryType: "CloseRequest", message });
         const r = await api<{ txHash: Hash }>("/v1/close", { method: "POST", headers: { "idempotency-key": `${acct.address}:${message.nonce}` }, body: jsonBig({ message, signature }) });
