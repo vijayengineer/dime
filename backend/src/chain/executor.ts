@@ -14,15 +14,27 @@ export interface TxResult {
   error?: string;
 }
 
+/** Risk-reducing actions go first: a close or liquidation never waits behind someone's open. */
+const PRIORITY: ReadonlySet<TxRow["kind"]> = new Set(["CLOSE", "LIQUIDATE", "PROTECT", "SET_STATE"]);
+/** Extra queue room kept for priority work, so a flood of opens can't lock closes out. */
+const PRIORITY_RESERVE = 50;
+
+/** Args, or a function that builds them when the tx is actually sent (e.g. to attach a fresh price proof). */
+export type TxArgs = readonly unknown[] | (() => readonly unknown[]);
+
+interface Job { kind: TxRow["kind"]; ref: string; functionName: string; args: TxArgs; resolve: (r: TxResult) => void }
+
 /**
- * One signer, one in-flight transaction at a time (bounded queue). Every tx is recorded
- * BEFORE it is sent. A timeout marks it UNKNOWN for the reconciler — it is never blindly
- * resubmitted (that could duplicate a position). Simulation runs first to fail fast with the
- * contract's custom error.
+ * One signer, one in-flight transaction at a time (bounded queue, two lanes). Closes, liquidations,
+ * protection closes and state changes jump ahead of opens and epoch funding; within a lane it is
+ * first-in, first-out, and size never matters. Every tx is recorded BEFORE it is sent. A timeout
+ * marks it UNKNOWN for the reconciler — it is never blindly resubmitted (that could duplicate a
+ * position). Simulation runs first to fail fast with the contract's custom error.
  */
 export class Executor {
-  private chainQ: Promise<unknown> = Promise.resolve();
-  private depth = 0;
+  private high: Job[] = [];
+  private normal: Job[] = [];
+  private running = false;
   private nextNonce: number | null = null;
   readonly sendToInclusion = new Latency();
   readonly address: Hex;
@@ -34,14 +46,36 @@ export class Executor {
     this.address = w.account.address;
   }
 
-  get queueDepth() { return this.depth; }
+  get queueDepth() { return this.high.length + this.normal.length + (this.running ? 1 : 0); }
 
-  submit(kind: TxRow["kind"], ref: string, functionName: string, args: readonly unknown[]): Promise<TxResult> {
-    if (this.depth >= this.maxDepth) return Promise.resolve({ txId: "", status: "FAILED", error: "executor queue full" });
-    this.depth++;
-    const run = this.chainQ.then(() => this.run(kind, ref, functionName, args)).finally(() => { this.depth--; });
-    this.chainQ = run.catch(() => undefined);
-    return run;
+  submit(kind: TxRow["kind"], ref: string, functionName: string, args: TxArgs): Promise<TxResult> {
+    const prio = PRIORITY.has(kind);
+    if (this.queueDepth >= this.maxDepth + (prio ? PRIORITY_RESERVE : 0)) {
+      return Promise.resolve({ txId: "", status: "FAILED", error: "executor queue full" });
+    }
+    return new Promise<TxResult>((resolve) => {
+      (prio ? this.high : this.normal).push({ kind, ref, functionName, args, resolve });
+      void this.pump();
+    });
+  }
+
+  private async pump() {
+    if (this.running) return;
+    this.running = true;
+    try {
+      for (let job = this.high.shift() ?? this.normal.shift(); job; job = this.high.shift() ?? this.normal.shift()) {
+        let res: TxResult;
+        try {
+          const args = typeof job.args === "function" ? job.args() : job.args;
+          res = await this.run(job.kind, job.ref, job.functionName, args);
+        } catch (e) {
+          res = { txId: "", status: "FAILED", error: (e as Error).message.slice(0, 300) };
+        }
+        job.resolve(res);
+      }
+    } finally {
+      this.running = false;
+    }
   }
 
   private async run(kind: TxRow["kind"], ref: string, functionName: string, args: readonly unknown[]): Promise<TxResult> {

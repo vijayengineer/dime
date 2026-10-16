@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { MAINNET } from "@/config/mainnet";
+import { brand } from "@/config/brand";
 
 export const metadata: Metadata = {
   title: "How DIME works",
@@ -14,6 +15,7 @@ const SECTIONS = [
   { id: "trade", title: "How a trade works" },
   { id: "prices", title: "The price" },
   { id: "dime", title: "DIME and staking" },
+  { id: "money", title: "Where the money goes" },
   { id: "risks", title: "Risks" },
   { id: "limits", title: "Live-test limits" },
   { id: "contracts", title: "Contracts" },
@@ -144,6 +146,19 @@ export default function DocsPage() {
               <li>Earned DIME is staked for you and held by the protocol contract, so it doesn&apos;t show in your wallet. See it on <Link href="/house">The House</Link>.</li>
               <li>Staked DIME starts earning at the next epoch. It shares part of new house earnings, paid in USDC, once earlier house losses are recovered. Some epochs pay nothing.</li>
               <li>DIME can&apos;t be transferred until a publicly scheduled date. It is not a refund and has no guaranteed value.</li>
+            </ul>
+          </section>
+
+          <section id="money">
+            <h2>Where the money goes</h2>
+            <ul>
+              <li><strong>Fees.</strong> There is no fee to open, and none on a loss. A winning trade pays 25% of its profit. That is the whole fee: no spread, no funding, and no curve that takes more from small wins.</li>
+              <li><strong>House trades.</strong> When you lose against the house, your margin goes into the house reserve. When you win, the reserve pays your profit minus the fee.</li>
+              <li><strong>Matched trades.</strong> The loser pays the winner directly. The house only takes the 25% fee on the winner&apos;s profit.</li>
+              <li><strong>Stakers get 20%.</strong> Each daily epoch, once earlier house losses are recovered, 20% of the house&apos;s new earnings are paid in USDC to staked DIME. Some epochs pay nothing.</li>
+              <li><strong>The operator keeps 80%.</strong> The rest stays in the house reserve, which is owned by the operator ({brand.orgLine.replace(/^by /, "")}). It is the operator&apos;s capital and earnings, and it backs every house trade.</li>
+              <li><strong>What the operator can withdraw.</strong> Only house reserve above what open positions need, and never while the protocol is insolvent. Every withdrawal is a public <code>ReserveWithdrawn</code> event on-chain.</li>
+              <li><strong>What the operator can&apos;t touch.</strong> Your free balance and your locked margin. The contract only pays them out to you, when you withdraw or when a trade settles.</li>
             </ul>
           </section>
 

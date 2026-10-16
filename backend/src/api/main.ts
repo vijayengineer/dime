@@ -348,7 +348,8 @@ app.post("/v1/close", { preHandler: authenticate, config: { rateLimit: { max: 30
   if (!(await verifyClose(c, m, b.signature as Hex))) return json(reply, 401, err("BAD_SIGNATURE", "Signature does not match"));
   const proof = prices.freshProof(2000);
   if (!proof) return json(reply, 503, err("PRICE_UNAVAILABLE", "No fresh verified price; close is held until the reference recovers"));
-  const res = await relayer.submit("CLOSE", m.positionId, "close", [m, b.signature, { payload: proof.payload }]);
+  // Closes take the priority lane; the price proof is attached when the tx is sent, so it is never stale.
+  const res = await relayer.submit("CLOSE", m.positionId, "close", () => [m, b.signature, { payload: (prices.freshProof(2000) ?? proof).payload }]);
   metrics.close.record(performance.now() - t0);
   if (res.status === "FAILED") return json(reply, 409, err("REJECTED", `Close rejected (${res.revert ?? res.error})`, { revert: res.revert }));
   const body = toWire({ txHash: res.hash, status: res.status, block: res.block });

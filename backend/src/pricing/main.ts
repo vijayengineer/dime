@@ -28,7 +28,7 @@ const REDUNDANT = new Set((process.env.REDUNDANT_SOURCES ?? "hyperliquid,binance
 const REDUNDANCY = Number(process.env.REDUNDANCY ?? 2);
 const FEED_ORIGINS = (process.env.FEED_ALLOWED_ORIGINS ?? cfg.CORS_ORIGINS).split(",").map((x) => x.trim());
 
-const agg = new Aggregator({ maxAgeMs: cfg.MAX_SOURCE_AGE_MS, maxDisagreementBps: cfg.MAX_DISAGREEMENT_BPS, minSources: cfg.MIN_SOURCES });
+const agg = new Aggregator({ maxAgeMs: cfg.MAX_SOURCE_AGE_MS, maxDisagreementBps: cfg.MAX_DISAGREEMENT_BPS, minSources: cfg.MIN_SOURCES, anchor: cfg.PRICE_ANCHOR });
 const internalLatency = new Latency();
 const signLatency = new Latency();
 const counters = new Counters();

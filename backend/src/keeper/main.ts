@@ -34,6 +34,9 @@ async function tick() {
   ]);
   const state = PROTOCOL_STATES[st];
   const proof = prices.freshProof(2000);
+  // Attach the price when the tx is sent, not when it was queued: a liquidation is judged at the
+  // freshest verified price, so a recovered price makes it revert instead of closing someone late.
+  const fresh = () => ({ payload: (prices.freshProof(2000) ?? proof!).payload });
 
   // Chain time, not wall clock: the contract checks block.timestamp.
   if (block.timestamp >= epochStart + cfgOnChain.epochSeconds && !inFlight.has("epoch")) {
@@ -48,7 +51,7 @@ async function tick() {
     const ids = open.filter((p) => !inFlight.has(p.id)).slice(0, 20).map((p) => p.id as `0x${string}`);
     if (ids.length) {
       ids.forEach((i) => inFlight.add(i));
-      exec.submit("LIQUIDATE", ids.join(","), "windDownSettle", [ids, { payload: proof.payload }]).finally(() => ids.forEach((i) => inFlight.delete(i)));
+      exec.submit("LIQUIDATE", ids.join(","), "windDownSettle", () => [ids, fresh()]).finally(() => ids.forEach((i) => inFlight.delete(i)));
     }
     return;
   }
@@ -59,7 +62,7 @@ async function tick() {
     const isLong = p.side === 0;
     if (isLong ? px <= liq : px >= liq) {
       inFlight.add(p.id);
-      exec.submit("LIQUIDATE", p.id, "liquidate", [p.id, { payload: proof.payload }])
+      exec.submit("LIQUIDATE", p.id, "liquidate", () => [p.id, fresh()])
         .then((r) => { counters.inc(`liquidate.${r.status}`); log.info({ id: p.id, status: r.status, revert: r.revert }, "liquidate"); })
         .finally(() => inFlight.delete(p.id));
       continue;
@@ -70,7 +73,7 @@ async function tick() {
       const raw = ((isLong ? px - entry : entry - px) * notional) / entry;
       if (raw * 10_000n >= BigInt(p.reservation) * BigInt(cfgOnChain.protectionTriggerBps)) {
         inFlight.add(p.id);
-        exec.submit("PROTECT", p.id, "protect", [p.id, { payload: proof.payload }])
+        exec.submit("PROTECT", p.id, "protect", () => [p.id, fresh()])
           .then((r) => { counters.inc(`protect.${r.status}`); log.info({ id: p.id, status: r.status }, "protect"); })
           .finally(() => inFlight.delete(p.id));
       }

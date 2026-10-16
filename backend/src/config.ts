@@ -38,6 +38,9 @@ const Env = z.object({
   KEEPER_KEY_FILE: z.string().optional(),
   GUARDIAN_KEY_FILE: z.string().optional(),
   PRICE_SOURCES: z.string().default("hyperliquid,binance,coinbase,okx,bybit,kraken"),
+  /** Quote group the index is expressed in. USD = spot dollars (Coinbase/Kraken terms). USDC_PERP = Hyperliquid
+   *  perp terms: still the multi-venue median, shifted by the measured perp basis so it tracks Hyperliquid's price. */
+  PRICE_ANCHOR: z.enum(["USD", "USDT", "USDC_PERP"]).default("USD"),
   PRICING_PORT: z.coerce.number().default(8710),
   PRICING_URL: z.string().default("ws://127.0.0.1:8710/internal"),
   MAX_SOURCE_AGE_MS: z.coerce.number().default(2000),

@@ -4,7 +4,7 @@ import { parsePrice } from "../src/pricing/decimal";
 import { Store, type IntentRow } from "../src/store/db";
 import { fits, planAdmissions, queueSpot } from "../src/matching/houseQueue";
 import { Matcher, reasonFor } from "../src/matching/matcher";
-import type { TxResult } from "../src/chain/executor";
+import { Executor, type TxResult } from "../src/chain/executor";
 
 const P = (s: string) => parsePrice(s);
 
@@ -325,5 +325,27 @@ describe("house queue (exposure-based capacity)", () => {
     m.drainHouse();
     await new Promise((r) => setTimeout(r, 0));
     expect(store.getIntent("h1")!.status).toBe("OPENED");
+  });
+});
+
+describe("executor lanes", () => {
+  it("runs closes and liquidations ahead of queued opens, FIFO within each lane", async () => {
+    const fakeChain = { wallet: () => ({ client: {}, account: { address: "0x0000000000000000000000000000000000000001" } }) } as never;
+    const ex = new Executor(new Store(":memory:"), fakeChain, "0x01", "relayer");
+    const order: string[] = [];
+    (ex as unknown as { run: (k: string, ref: string) => Promise<TxResult> }).run = async (k, ref) => {
+      order.push(`${k}:${ref}`);
+      await new Promise((r) => setTimeout(r, 1));
+      return { txId: ref, status: "INCLUDED" };
+    };
+    const all = [
+      ex.submit("OPEN_HOUSE", "o1", "openHouse", []), // starts immediately
+      ex.submit("OPEN_HOUSE", "o2", "openHouse", []),
+      ex.submit("OPEN_MATCHED", "o3", "openMatched", []),
+      ex.submit("CLOSE", "c1", "close", () => ["built late"]),
+      ex.submit("LIQUIDATE", "l1", "liquidate", []),
+    ];
+    await Promise.all(all);
+    expect(order).toEqual(["OPEN_HOUSE:o1", "CLOSE:c1", "LIQUIDATE:l1", "OPEN_HOUSE:o2", "OPEN_MATCHED:o3"]);
   });
 });
