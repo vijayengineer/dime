@@ -149,7 +149,8 @@ export type HouseAdmission = { ok: true; reservation: bigint } | { ok: false; re
 
 export function admitHouseTrade(book: HouseBook, side: Side, collateral: bigint, leverage: number, params: ProtocolParams): HouseAdmission {
   const reservation = houseReservationFor(collateral, params);
-  if (book.openHousePositions >= params.maxConcurrentHousePositions) {
+  // 0 = no count limit: capacity is exposure-based (reservations vs reserve × utilisation).
+  if (params.maxConcurrentHousePositions > 0 && book.openHousePositions >= params.maxConcurrentHousePositions) {
     return { ok: false, reason: "House position slots are full", reservation };
   }
   if (reservation > houseAvailableCapacity(book, params)) {

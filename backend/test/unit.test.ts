@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Aggregator } from "../src/pricing/aggregate";
 import { parsePrice } from "../src/pricing/decimal";
 import { Store, type IntentRow } from "../src/store/db";
+import { fits, planAdmissions, queueSpot } from "../src/matching/houseQueue";
 import { Matcher, reasonFor } from "../src/matching/matcher";
 import type { TxResult } from "../src/chain/executor";
 
@@ -71,13 +72,13 @@ describe("matcher", () => {
       },
       { check: async (r) => opts.elig?.(r) ?? null },
       () => {},
-      { maxQueuePerBucket: 2, proofMaxAgeMs: 2000, submitMarginMs: 1000, houseAfterDeadlineMs: 1000, positionIdFor: () => "0xpos" },
+      { maxQueuePerBucket: 2, proofMaxAgeMs: 2000, submitMarginMs: 1000, houseAfterDeadlineMs: 1000, positionIdFor: () => "0xpos", capacity: () => ({ available: 10n ** 15n, reserve: 10n ** 15n, netDirectional: 0n, reservationMultiple: 20n, netNotionalMultiple: 200n }), headHoldMs: 3000, maxHouseQueue: 10 },
       () => now,
     );
     let n = 0;
     const add = async (user: string, side: 0 | 1, mask: number, lev = 1000) => {
       const row: IntentRow = {
-        id: `i${++n}`, user, nonce: String(n), status: mask & 1 ? "MATCHING" : "SUBMITTED", side, collateral: "100000", leverage: lev,
+        id: `i${++n}`, user, nonce: String(n), status: mask & 1 ? "MATCHING" : "QUEUED", side, collateral: "100000", leverage: lev,
         route_mask: mask, match_deadline: Math.floor(now / 1000) + 5, expiry: Math.floor(now / 1000) + 30,
         price_limit: side === 0 ? P("200000").toString() : "1", config_version: 1, match_window_ms: 5000, slippage_bps: 2,
         message: "{}", signature: "0x", route: mask & 1 ? null : "HOUSE", reason: null, tx_id: null, position_id: null,
@@ -133,6 +134,10 @@ describe("matcher", () => {
     expect(reasonFor("MatchWindow").status).toBe("EXPIRED");
     const t = setup({ exec: { h: { txId: "t", status: "FAILED", revert: "CapacityUnavailable" } } });
     const a = await t.add("alice", 0, 2);
+    // A capacity revert means our snapshot was ahead of the chain: wait in line, fail only at expiry.
+    expect(t.store.getIntent(a)!.status).toBe("QUEUED");
+    t.advance(31_000);
+    await t.m.tick();
     expect(t.store.getIntent(a)!.status).toBe("CAPACITY_UNAVAILABLE");
   });
 
@@ -215,7 +220,7 @@ describe("matcher house fallback vs chain clock", () => {
         openHouse: async () => (++calls === 1 ? { txId: "t", status: "FAILED", revert: "MatchWindow" } : { txId: "t", status: "INCLUDED", hash: "0xabc", block: 2 }),
       },
       { check: async () => null }, () => {},
-      { maxQueuePerBucket: 10, proofMaxAgeMs: 2000, submitMarginMs: 1000, houseAfterDeadlineMs: 1000, positionIdFor: () => "0xpos" },
+      { maxQueuePerBucket: 10, proofMaxAgeMs: 2000, submitMarginMs: 1000, houseAfterDeadlineMs: 1000, positionIdFor: () => "0xpos", capacity: () => ({ available: 10n ** 15n, reserve: 10n ** 15n, netDirectional: 0n, reservationMultiple: 20n, netNotionalMultiple: 200n }), headHoldMs: 3000, maxHouseQueue: 10 },
       () => now,
     );
     const row: IntentRow = {
@@ -258,5 +263,67 @@ describe("degraded fallback (Hyperliquid only)", () => {
     const b = new Aggregator({ maxAgeMs: 2000, maxDisagreementBps: 15, minSources: 2, degradedFallback: null });
     b.update(tk("hyperliquid", "USDC_PERP", "100000", 1000));
     expect(b.compute(1000)!.quality).toBe("INSUFFICIENT");
+  });
+});
+
+describe("house queue (exposure-based capacity)", () => {
+  const cap = (available: bigint) => ({ available, reserve: 100n * 10n ** 6n, netDirectional: 0n, reservationMultiple: 20n, netNotionalMultiple: 200n });
+  const q = (id: string, collateral: bigint, queuedAt = 0, side: 0 | 1 = 0) => ({ id, side, collateral, leverage: 100, queuedAt });
+  const $ = (v: number) => BigInt(Math.round(v * 1e6));
+
+  it("admits in arrival order while requests fit, never by size", () => {
+    expect(planAdmissions([q("a", $(0.1)), q("b", $(1)), q("c", $(0.1))], cap($(40)), 0, { headHoldMs: 3000 })).toEqual(["a", "b", "c"]);
+  });
+
+  it("lets smaller requests fill the gap while a big head is blocked, within the hold window", () => {
+    // $4 free; head needs $1 × 20 = $20; two $0.10 requests need $2 each.
+    expect(planAdmissions([q("big", $(1)), q("s1", $(0.1)), q("s2", $(0.1))], cap($(4)), 1000, { headHoldMs: 3000 })).toEqual(["s1", "s2"]);
+  });
+
+  it("holds capacity for the head once its hold window has passed", () => {
+    expect(planAdmissions([q("big", $(1)), q("s1", $(0.1))], cap($(4)), 3000, { headHoldMs: 3000 })).toEqual([]);
+  });
+
+  it("respects the net-directional limit like the contract", () => {
+    const tight = { ...cap($(1000)), reserve: $(1), netNotionalMultiple: 50n }; // limit $50 net
+    expect(fits(q("l", $(1)), tight)).toBe(false); // $100 long > $50
+    expect(fits(q("s", $(1), 0, 1), { ...tight, netDirectional: $(80) })).toBe(true); // reduces exposure
+  });
+
+  it("reports place in line and whether gap filling is on", () => {
+    const line = [q("big", $(1)), q("s1", $(0.1))];
+    expect(queueSpot(line, "s1", cap($(4)), 1000, { headHoldMs: 3000 })).toEqual({ position: 2, canFillGap: true });
+    expect(queueSpot(line, "s1", cap($(4)), 5000, { headHoldMs: 3000 })).toEqual({ position: 2, canFillGap: false });
+  });
+
+  it("matcher: a capacity revert puts the request back in line instead of failing it", async () => {
+    const store = new Store(":memory:");
+    const now = 1_000_000;
+    let calls = 0;
+    const m = new Matcher(
+      store,
+      { freshProof: () => ({ price: P("100000").toString(), tsMs: now, payload: "0x01" }) },
+      {
+        openMatched: async () => ({ txId: "t", status: "INCLUDED" }),
+        openHouse: async () => (++calls === 1 ? { txId: "t", status: "FAILED", revert: "CapacityUnavailable" } : { txId: "t", status: "INCLUDED", hash: "0xabc", block: 2 }),
+      },
+      { check: async () => null }, () => {},
+      { maxQueuePerBucket: 10, proofMaxAgeMs: 2000, submitMarginMs: 1000, houseAfterDeadlineMs: 1000, positionIdFor: () => "0xpos",
+        capacity: () => cap($(40)), headHoldMs: 3000, maxHouseQueue: 10 },
+      () => now,
+    );
+    const row: IntentRow = {
+      id: "h1", user: "alice", nonce: "1", status: "QUEUED", side: 0, collateral: "100000", leverage: 100, route_mask: 2,
+      match_deadline: Math.floor(now / 1000), expiry: Math.floor(now / 1000) + 30, price_limit: P("200000").toString(),
+      config_version: 1, match_window_ms: 0, slippage_bps: 2, message: "{}", signature: "0x", route: "HOUSE", reason: null,
+      tx_id: null, position_id: null, timeline: "[]", created_at: now, updated_at: now,
+    };
+    store.insertIntent(row);
+    m.drainHouse();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(store.getIntent("h1")!.status).toBe("QUEUED");
+    m.drainHouse();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(store.getIntent("h1")!.status).toBe("OPENED");
   });
 });

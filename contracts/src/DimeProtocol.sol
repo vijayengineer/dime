@@ -201,7 +201,8 @@ contract DimeProtocol is
         _checkLimit(it, px);
 
         uint256 reservation = uint256(it.collateral) * _cfg.houseReservationMultiple;
-        if (_openHouse >= _cfg.maxConcurrentHousePositions) revert SlotsFull();
+        // 0 = no count limit: capacity is exposure-based (reservation vs reserve × utilisation, below).
+        if (_cfg.maxConcurrentHousePositions != 0 && _openHouse >= _cfg.maxConcurrentHousePositions) revert SlotsFull();
         if (reservation > _available()) revert CapacityUnavailable();
         int256 notional = int256(uint256(it.collateral) * it.leverage);
         int256 nextNet = _netDirectional + (it.side == 0 ? notional : -notional);
@@ -440,11 +441,16 @@ contract DimeProtocol is
     }
 
     /// @notice DIME per $1 of eligible loss (18dp): flat up to `emissionDecayTvl` of house reserve,
-    ///         then inversely proportional to the reserve (halves each time the reserve doubles).
+    ///         then falling with the cube of the reserve: rate × (decayTvl / reserve)³. With a $1M
+    ///         knee that is 1/8 at $2M, 1/125 at $5M and 1/1000 at $10M. Each step rounds down.
     function emissionRate() public view returns (uint256) {
         uint256 r = _reserve;
-        if (r <= _cfg.emissionDecayTvl || r == 0) return _cfg.dimePerUsdE18;
-        return (uint256(_cfg.dimePerUsdE18) * _cfg.emissionDecayTvl) / r;
+        uint256 d = _cfg.emissionDecayTvl;
+        if (r <= d || r == 0) return _cfg.dimePerUsdE18;
+        uint256 rate = _cfg.dimePerUsdE18;
+        rate = (rate * d) / r;
+        rate = (rate * d) / r;
+        return (rate * d) / r;
     }
 
     function dimeToken() external view returns (address) { return address(_dime); }

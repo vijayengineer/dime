@@ -12,4 +12,7 @@ export const MAINNET = {
   dimeToken: "0xC64efbA1E151a0914509EC76CAe1b5A827Ce50C9",
   usdc: "0x754704Bc059F8C67012fEd69BC8A327a5aafb603",
   deploymentBlock: 113002354n,
+  // What this deployment actually runs. Flip after the contract redeploy / backend upgrade.
+  emissionCurve: "inverse" as "inverse" | "cubic", // contract deployed 2026-10-13: rate × knee / reserve
+  houseQueue: false, // production backend predates the house queue
 } as const;

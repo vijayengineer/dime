@@ -18,6 +18,13 @@ const heroDp = (v: bigint) => (v > -1_000_000n && v < 1_000_000n ? 3 : 2);
 export function IntentCard({ intent, onDismiss }: { intent: IntentState; onDismiss: () => void }) {
   const terminal = TERMINAL_INTENT.has(intent.status);
   const bad = ["CAPACITY_UNAVAILABLE", "EXPIRED", "REJECTED", "CANCELLED"].includes(intent.status);
+  // Re-render each second while waiting in line so the countdown moves.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (intent.status !== "QUEUED") return;
+    const t = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [intent.status]);
 
   // Deliberately one in-flight state: matching vs house routing is decided behind "Opening…".
   return (
@@ -33,6 +40,12 @@ export function IntentCard({ intent, onDismiss }: { intent: IntentState; onDismi
           <p className="note" style={{ margin: "2px 0 0" }}>
             {intent.draft.side === "LONG" ? "Long" : "Short"} · {usd(intent.draft.collateral)} × {intent.draft.leverage}
           </p>
+          {intent.status === "QUEUED" && (
+            <p className="note num" style={{ margin: "2px 0 0" }}>
+              {intent.queue ? `#${intent.queue.position} in line` : "In line"} · gives up in {Math.max(0, Math.ceil((intent.expiresAt - Date.now()) / 1000))} s
+              {intent.queue?.canFillGap ? " · smaller sizes are filling a gap" : ""}
+            </p>
+          )}
         </div>
       </div>
       {intent.status === "CAPACITY_UNAVAILABLE" || intent.status === "EXPIRED"

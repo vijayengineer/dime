@@ -194,17 +194,21 @@ describe("rights", () => {
 });
 
 describe("DIME issuance and staking", () => {
-  it("issues 0.1 DIME per $1 and decays inversely with house reserve above $1M", () => {
-    expect(emissionRate(P, usd("10"))).toBe(10n ** 17n);
-    expect(emissionRate(P, usd("4000000"))).toBe(25n * 10n ** 15n); // 0.025
+  it("issues 10 DIME per $1 up to $1M, then falls with the cube of the reserve", () => {
+    const E18 = 10n ** 18n;
+    expect(emissionRate(P, usd("10"))).toBe(10n * E18);
+    expect(emissionRate(P, usd("1000000"))).toBe(10n * E18);
+    expect(emissionRate(P, usd("2000000"))).toBe(125n * 10n ** 16n); // 10 / 8
+    expect(emissionRate(P, usd("5000000"))).toBe(8n * 10n ** 16n); // 10 / 125
+    expect(emissionRate(P, usd("10000000"))).toBe(10n ** 16n); // 10 / 1000
     const g = newRightsGlobal();
     const u = newUserRights();
-    expect(recordHouseResult(u, g, -usd("0.10"), P, usd("10"))).toBe(10n ** 16n); // 0.01 DIME
+    expect(recordHouseResult(u, g, -usd("0.10"), P, usd("10"))).toBe(E18); // 1 DIME
   });
 
   it("caps DIME issued per epoch", () => {
     const g = newRightsGlobal();
-    const capped = { ...P, maxMintPerEpoch: 15n * 10n ** 15n }; // 0.015 DIME
+    const capped = { ...P, dimePerUsdE18: 10n ** 17n, maxMintPerEpoch: 15n * 10n ** 15n }; // 0.1 DIME/$, cap 0.015 DIME
     expect(recordHouseResult(newUserRights(), g, -usd("0.10"), capped, usd("10"))).toBe(10n ** 16n);
     expect(recordHouseResult(newUserRights(), g, -usd("0.10"), capped, usd("10"))).toBe(5n * 10n ** 15n);
     expect(recordHouseResult(newUserRights(), g, -usd("0.10"), capped, usd("10"))).toBe(0n);

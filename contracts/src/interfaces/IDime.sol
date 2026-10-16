@@ -73,11 +73,11 @@ interface IDimeTypes {
         uint16 protectionTriggerBps;
         uint16 houseMaxUtilisationBps;
         uint32 houseMaxNetNotionalMultiple;
-        uint16 maxConcurrentHousePositions;
+        uint16 maxConcurrentHousePositions; // 0 = no count limit (exposure-based capacity only)
         uint16 maxConcurrentMatchedPairs;
         uint128 matchedGapBackstop;
         uint128 dimePerUsdE18; // DIME (18dp) issued per $1 of eligible loss while reserve <= emissionDecayTvl
-        uint128 emissionDecayTvl; // above this house reserve, the rate falls as decayTvl / reserve
+        uint128 emissionDecayTvl; // above this house reserve, the rate falls as (decayTvl / reserve)^3
         uint128 maxMintPerEpoch; // hard cap on DIME issued per epoch (18dp)
         uint128 minStake; // a manual stake must leave the holder with at least this much staked (18dp)
         uint16 distributionShareBps;

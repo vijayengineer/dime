@@ -23,10 +23,15 @@ import { BPS, floorDiv, max, min } from "./fixed";
 export const INDEX_SCALE = 10n ** 18n;
 export const DIME_DECIMALS = 18;
 
-/** DIME per $1 of eligible loss (18dp): flat up to decayTvl of house reserve, then decayTvl/reserve. Mirrors DimeProtocol.emissionRate. */
-export function emissionRate(params: Pick<ProtocolParams, "dimePerUsdE18" | "emissionDecayTvl">, reserve: bigint): bigint {
-  if (reserve <= params.emissionDecayTvl || reserve === 0n) return params.dimePerUsdE18;
-  return (params.dimePerUsdE18 * params.emissionDecayTvl) / reserve;
+/** DIME per $1 of eligible loss (18dp): flat up to decayTvl of house reserve, then × (decayTvl/reserve)³,
+ *  rounding down at each step. Mirrors DimeProtocol.emissionRate. */
+export function emissionRate(params: Pick<ProtocolParams, "dimePerUsdE18" | "emissionDecayTvl"> & Partial<Pick<ProtocolParams, "emissionCurve">>, reserve: bigint): bigint {
+  const d = params.emissionDecayTvl;
+  if (reserve <= d || reserve === 0n) return params.dimePerUsdE18;
+  if (params.emissionCurve === "inverse") return (params.dimePerUsdE18 * d) / reserve; // older deployments
+  let rate = params.dimePerUsdE18;
+  for (let i = 0; i < 3; i++) rate = (rate * d) / reserve;
+  return rate;
 }
 
 export interface UserRights {

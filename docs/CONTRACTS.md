@@ -219,9 +219,9 @@ WIND_DOWN batching gas bounds.
 - **Issuance:** for each new net loss on a *house* trade above the user's high-water mark, issue
   `loss × emissionRate()` DIME, minted into the protocol as the user's **pending stake**. It activates
   next epoch.
-  - `emissionRate() = dimePerUsdE18` (default 0.1 DIME per $1) while the house reserve is at or below
-    `emissionDecayTvl` (default $1M). Above that it is `dimePerUsdE18 × emissionDecayTvl / reserve`, so the
-    rate halves each time the house doubles.
+  - `emissionRate() = dimePerUsdE18` (default 10 DIME per $1) while the house reserve is at or below
+    `emissionDecayTvl` (default $1M). Above that it is `dimePerUsdE18 × (emissionDecayTvl / reserve)³`, rounded
+    down at each step: 1/8 of the base at $2M, 1/125 at $5M, 1/1000 at $10M.
   - Hard cap: `maxMintPerEpoch` (the high-water mark still advances when the cap binds).
   - Matched trades never issue DIME.
 - **Minimum stake:** a manual `stake` must leave the holder with at least `minStake` staked (default
@@ -233,6 +233,9 @@ WIND_DOWN batching gas bounds.
   house earnings, after loss recovery and the reserve floor, through the same reward index as before.
   `claim()` credits USDC to the free balance.
 - **Farming bound** (design input, not enforced): with paired house trades across two wallets, $1 of
-  "loss" costs about $0.25 (the profit fee). Farming pays when `rate × DIME price > $0.25`. At 0.1 DIME/$
-  that means a DIME price above $2.50. TVL decay and the per-epoch cap tighten this as the protocol grows.
+  "loss" costs about $0.25 (the profit fee), and that $0.25 is house earnings, of which stakers get only
+  `distributionShareBps` back. So farmers can't recover their spend from their own flow; they profit only by
+  taking a share of real traders' losses from real stakers. The lifetime deposit cap bounds each wallet to about
+  cap ÷ fee of eligible loss ($40 at $10 and 25%), and the $100 exposure cap bounds daily churn per pair.
+  Model it at `/lab` on the dev server (`src/app/lab/model.ts`).
 - Events: `DimeIssued`, `Staked`, `Unstaked` (Envio-indexed).

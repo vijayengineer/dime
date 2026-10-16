@@ -3,6 +3,7 @@ import { log } from "../log";
 import { Counters, Latency } from "../metrics";
 import type { IntentRow, IntentStatus, Store } from "../store/db";
 import type { TxResult } from "../chain/executor";
+import { planAdmissions, queueSpot, reservationFor, type HouseCapacity, type QueuedReq, type QueueSpot } from "./houseQueue";
 
 export interface ProofSource { freshProof(maxAgeMs: number): { price: string; tsMs: number; payload: Hex } | null }
 
@@ -22,6 +23,11 @@ export interface MatcherOptions {
   /** House fallback only once block.timestamp > matchDeadline; wait this long after the deadline. */
   houseAfterDeadlineMs: number;
   positionIdFor(row: IntentRow): Hex;
+  /** On-chain house capacity snapshot (null while unknown). In-flight house opens are subtracted here. */
+  capacity(): HouseCapacity | null;
+  /** How long a blocked head lets smaller requests fill the gap before capacity is held for it. */
+  headHoldMs: number;
+  maxHouseQueue: number;
 }
 
 const CAPACITY_ERRORS = new Set(["CapacityUnavailable", "SlotsFull", "ConcentrationLimit"]);
@@ -44,7 +50,8 @@ export function reasonFor(revert: string | null | undefined): { status: IntentSt
 /**
  * Whole-ticket FIFO matcher. Buckets are (collateral, leverage); opposite sides pair in arrival
  * order. No partial fills, no splitting, no self-matching (address-level only — coordinated
- * multi-wallet trading is NOT prevented). Larger size is never prioritised. Persistent: all
+ * multi-wallet trading is NOT prevented). Larger size is never prioritised. House-bound requests
+ * wait in an exposure-aware queue (houseQueue.ts) instead of failing when capacity is momentarily full. Persistent: all
  * state transitions go through the store; in-memory buckets are rebuilt from it on start.
  */
 export class Matcher {
@@ -77,12 +84,60 @@ export class Matcher {
   /** Called after a new intent is persisted. */
   async onNew(row: IntentRow) {
     if (row.status === "MATCHING") await this.tryMatch(row);
+    else if (row.status === "QUEUED") await this.drainHouse();
     else if (row.status === "SUBMITTED" && row.route === "HOUSE") await this.executeHouse(row);
+  }
+
+  canQueueHouse(): boolean { return this.houseQueueLength() < this.opt.maxHouseQueue; }
+  houseQueueLength(): number { return this.store.intentsByStatus("QUEUED").length; }
+
+  /* ---------------------------------------------------------------- house queue */
+  private queued(): QueuedReq[] {
+    return this.store.intentsByStatus("QUEUED").map((r) => ({
+      id: r.id, side: r.side, collateral: BigInt(r.collateral), leverage: r.leverage, queuedAt: r.updated_at,
+    }));
+  }
+
+  /** Capacity minus house opens already sent but not yet reflected on-chain. */
+  private houseCapacity(): HouseCapacity | null {
+    const cap = this.opt.capacity();
+    if (!cap) return null;
+    let available = cap.available, net = cap.netDirectional;
+    for (const r of this.store.intentsByStatus("SUBMITTED")) {
+      if (r.route !== "HOUSE") continue;
+      const coll = BigInt(r.collateral), n = coll * BigInt(r.leverage);
+      available -= reservationFor({ collateral: coll }, cap);
+      net += r.side === 0 ? n : -n;
+    }
+    return { ...cap, available: available > 0n ? available : 0n, netDirectional: net };
+  }
+
+  /** Submit every queued house request the policy admits now. All are marked SUBMITTED first, so the
+   *  in-flight accounting sees them before any transaction is sent. */
+  async drainHouse() {
+    const cap = this.houseCapacity();
+    if (!cap) return;
+    const runs: Promise<void>[] = [];
+    for (const id of planAdmissions(this.queued(), cap, this.now(), { headHoldMs: this.opt.headHoldMs })) {
+      if (!this.store.transition(id, ["QUEUED"], "SUBMITTED", { route: "HOUSE" }, "House capacity free — opening")) continue;
+      this.emit(id);
+      runs.push(this.executeHouse(this.store.getIntent(id)!));
+    }
+    await Promise.all(runs);
+  }
+
+  queueInfo(row: IntentRow): QueueSpot | null {
+    if (row.status !== "QUEUED") return null;
+    return queueSpot(this.queued(), row.id, this.houseCapacity(), this.now(), { headHoldMs: this.opt.headHoldMs });
   }
 
   /** Periodic sweep: retries matching (e.g. after a stale proof), handles deadlines and expiry. */
   async tick() {
     const nowMs = this.now();
+    for (const r of this.store.intentsByStatus("QUEUED")) {
+      if (r.expiry * 1000 <= nowMs) this.finish(r, "CAPACITY_UNAVAILABLE", "The house stayed full for your whole request window. Nothing was opened.", ["QUEUED"]);
+    }
+    await this.drainHouse();
     for (const r of this.store.intentsByStatus("MATCHING")) {
       if (this.busy.has(r.id)) continue;
       const deadlineMs = r.match_deadline * 1000;
@@ -90,10 +145,10 @@ export class Matcher {
       if (nowMs <= deadlineMs - this.opt.submitMarginMs) { await this.tryMatch(r); continue; }
       if (nowMs < deadlineMs + this.opt.houseAfterDeadlineMs) continue; // window closing; wait for the house rule
       if (r.route_mask & 2) {
-        if (this.store.transition(r.id, ["MATCHING"], "SUBMITTED", { route: "HOUSE" }, "No match in window — house fallback (authorised)")) {
+        if (this.store.transition(r.id, ["MATCHING"], "QUEUED", { route: "HOUSE" }, "No match in window — house fallback (authorised)")) {
           this.matchWait.record(nowMs - r.created_at);
           this.emit(r.id);
-          await this.executeHouse(this.store.getIntent(r.id)!);
+          await this.drainHouse();
         }
       } else {
         this.matchWait.record(nowMs - r.created_at);
@@ -138,7 +193,7 @@ export class Matcher {
     }
   }
 
-  private async executeHouse(row: IntentRow) {
+  private async executeHouse(row: IntentRow): Promise<void> {
     if (this.busy.has(row.id)) return;
     this.busy.add(row.id);
     try {
@@ -164,6 +219,10 @@ export class Matcher {
         }
       } else if (res.status === "UNKNOWN") {
         log.error({ id, hash: res.hash }, "open tx outcome unknown; awaiting reconciliation / events");
+      } else if (route === "HOUSE" && res.revert && CAPACITY_ERRORS.has(res.revert) && row.expiry * 1000 > this.now()) {
+        // Our snapshot was ahead of the chain. Back in line (keeps its arrival order) until it fits or expires.
+        this.store.transition(id, ["SUBMITTED"], "QUEUED", {}, "House filled up first — waiting in line");
+        this.emit(id);
       } else if (route === "HOUSE" && res.revert === "MatchWindow") {
         // Chain clock hasn't passed the user's match deadline yet (block timestamps have 1 s
         // granularity). Not a failure: put it back and retry the authorised fallback next tick.

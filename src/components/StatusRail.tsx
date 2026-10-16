@@ -9,6 +9,7 @@ export const INTENT_COPY: Record<IntentStatus, string> = {
   // One user-facing state while a request is in flight; routing happens behind it.
   SIGNING: "Confirm in your wallet",
   MATCHING: "Opening your position…",
+  QUEUED: "Waiting in line for the house…",
   SUBMITTED: "Opening your position…",
   OPENED: "Position opened",
   CAPACITY_UNAVAILABLE: "Not opened: the house was full",

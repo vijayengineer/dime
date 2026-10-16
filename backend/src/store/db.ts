@@ -7,7 +7,7 @@ import Database from "better-sqlite3";
  * authoritative; this store exists so restarts never lose track of a request or a sent tx.
  * SQLite (WAL) is sufficient for the small-scale v1; the schema ports to Postgres.
  */
-export type IntentStatus = "MATCHING" | "SUBMITTED" | "OPENED" | "CAPACITY_UNAVAILABLE" | "EXPIRED" | "REJECTED" | "CANCELLED";
+export type IntentStatus = "MATCHING" | "QUEUED" | "SUBMITTED" | "OPENED" | "CAPACITY_UNAVAILABLE" | "EXPIRED" | "REJECTED" | "CANCELLED";
 export const TERMINAL: IntentStatus[] = ["OPENED", "CAPACITY_UNAVAILABLE", "EXPIRED", "REJECTED", "CANCELLED"];
 
 export interface IntentRow {
@@ -139,7 +139,7 @@ export class Store {
     return this.db.prepare("SELECT * FROM intents WHERE position_id = ?").get(positionId.toLowerCase()) as IntentRow | undefined;
   }
   liveIntentForUser(user: string) {
-    return this.db.prepare("SELECT * FROM intents WHERE user = ? AND status IN ('MATCHING','SUBMITTED') LIMIT 1").get(user.toLowerCase()) as IntentRow | undefined;
+    return this.db.prepare("SELECT * FROM intents WHERE user = ? AND status IN ('MATCHING','QUEUED','SUBMITTED') LIMIT 1").get(user.toLowerCase()) as IntentRow | undefined;
   }
   latestIntentForUser(user: string) {
     return this.db.prepare("SELECT * FROM intents WHERE user = ? ORDER BY created_at DESC LIMIT 1").get(user.toLowerCase()) as IntentRow | undefined;

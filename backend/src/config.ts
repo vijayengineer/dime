@@ -57,6 +57,9 @@ const Env = z.object({
   FAUCET_DRIP_WEI: z.coerce.bigint().default(100_000_000_000_000_000n),
   FAUCET_MIN_BALANCE_WEI: z.coerce.bigint().default(20_000_000_000_000_000n),
   MAX_QUEUE_PER_BUCKET: z.coerce.number().default(100),
+  /** A blocked head lets smaller house requests fill the gap for this long, then capacity is held for it. */
+  HOUSE_HEAD_HOLD_MS: z.coerce.number().default(3000),
+  MAX_HOUSE_QUEUE: z.coerce.number().default(200),
   RATE_LIMIT_PER_MIN: z.coerce.number().default(600),
   KEEPER_INTERVAL_MS: z.coerce.number().default(1000),
   WATCHDOG_INTERVAL_MS: z.coerce.number().default(2000),

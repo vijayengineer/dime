@@ -288,6 +288,39 @@ contract DimeTest is Test, IDimeTypes {
         dime.openHouse(it, sig, px);
     }
 
+    function test_slotCountZeroMeansExposureOnly() public {
+        // A count limit of 1 blocks the second house position even with capacity to spare...
+        Config memory c = _cfg();
+        c.maxConcurrentHousePositions = 1;
+        vm.prank(admin);
+        dime.setConfig(c); // version 2
+        _openHouseV(alicePk, alice, 2);
+        OrderIntent memory it = _intent(bob, 0, 2);
+        it.configVersion = 2;
+        bytes memory sig = _sign(bobPk, it);
+        PriceProof memory px = _px(P0);
+        vm.prank(relayer);
+        vm.expectRevert(DimeProtocol.SlotsFull.selector);
+        dime.openHouse(it, sig, px);
+        // ...while 0 means only exposure (reservations vs reserve × utilisation) decides.
+        c.maxConcurrentHousePositions = 0;
+        vm.prank(admin);
+        dime.setConfig(c); // version 3
+        _openHouseV(bobPk, bob, 3);
+        _openHouseV(carolPk, carol, 3);
+        assertEq(dime.houseStats().openHousePositions, 3);
+        _invariant();
+    }
+
+    function _openHouseV(uint256 pk, address user, uint32 version) internal returns (bytes32 id) {
+        OrderIntent memory it = _intent(user, 0, 2);
+        it.configVersion = version;
+        bytes memory sig = _sign(pk, it);
+        PriceProof memory px = _px(P0);
+        vm.prank(relayer);
+        id = dime.openHouse(it, sig, px);
+    }
+
     function test_houseFallbackOnlyAfterMatchWindow() public {
         OrderIntent memory it = _intent(alice, 0, 3);
         bytes memory sig = _sign(alicePk, it);
@@ -614,7 +647,7 @@ contract DimeTest is Test, IDimeTypes {
         usdc.approve(address(dime), type(uint256).max);
         dime.fundReserve(3_999_990e6); // reserve $10 + $3,999,990 = $4M
         vm.stopPrank();
-        assertEq(dime.emissionRate(), 0.025e18); // 0.1 × 1M / 4M
+        assertEq(dime.emissionRate(), 0.0015625e18); // 0.1 × (1M / 4M)³ = 0.1 / 64
     }
 
     function test_perEpochMintCap() public {

@@ -128,6 +128,7 @@ export function createLiveServices(env: LiveEnv, wallet: WalletBridge): Services
         matchedGapBackstop: cfg.matchedGapBackstop, dimePerUsdE18: cfg.dimePerUsdE18, emissionDecayTvl: cfg.emissionDecayTvl, maxMintPerEpoch: cfg.maxMintPerEpoch, minStake: cfg.minStake,
         distributionShareBps: cfg.distributionShareBps, distributionReserveFloor: cfg.distributionReserveFloor,
         epochSeconds: Number(cfg.epochSeconds), maxPriceAgeMs: cfg.maxPriceAgeMs,
+        emissionCurve: env.emissionCurve, houseQueue: env.houseQueue,
       };
       configHub.ok(params);
     } catch (e) {
@@ -266,7 +267,10 @@ export function createLiveServices(env: LiveEnv, wallet: WalletBridge): Services
           capacity: {
             houseAvailable: Boolean(cap.houseAvailable), houseReason: cap.houseReason as string | undefined,
             houseReservationRequired: big(cap.houseReservationRequired), houseCapacityRemaining: big(cap.houseCapacityRemaining),
-            housePositionsRemaining: Number(cap.housePositionsRemaining), matchedPairsRemaining: Number(cap.matchedPairsRemaining),
+            housePositionsRemaining: cap.housePositionsRemaining == null ? null : Number(cap.housePositionsRemaining),
+            houseWouldWait: cap.houseWouldWait === undefined ? undefined : Boolean(cap.houseWouldWait),
+            houseQueueLength: cap.houseQueueLength === undefined ? undefined : Number(cap.houseQueueLength),
+            matchedPairsRemaining: Number(cap.matchedPairsRemaining),
             matchedOppositeWaiting: cap.matchedOppositeWaiting == null ? null : Number(cap.matchedOppositeWaiting), provenance: "ESTIMATE",
           },
           configVersion: Number(r.configVersion), createdAt: Date.now(), expiresAt: Number(r.expiresAt),

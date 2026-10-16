@@ -99,13 +99,13 @@ contract Deploy is Script, IDimeTypes {
         c.protectionTriggerBps = 9000;
         c.houseMaxUtilisationBps = 8000;
         c.houseMaxNetNotionalMultiple = 200;
-        c.maxConcurrentHousePositions = commissioning ? 3 : 10;
+        c.maxConcurrentHousePositions = 0; // exposure-based capacity only (0 = no count limit)
         c.maxConcurrentMatchedPairs = commissioning ? 5 : 25;
         c.matchedGapBackstop = 0;
-        c.dimePerUsdE18 = 0.1e18; // 0.1 DIME per $1 of eligible loss (UNVALIDATED)
+        c.dimePerUsdE18 = uint128(vm.envOr("DIME_PER_USD", uint256(10e18))); // 10 DIME per $1 of eligible loss (UNVALIDATED)
         c.emissionDecayTvl = uint128(vm.envOr("DIME_EMISSION_DECAY_TVL", uint256(1_000_000e6))); // $1M house reserve
-        c.minStake = uint128(vm.envOr("DIME_MIN_STAKE", uint256(0.1e18))); // 0.1 DIME (UNVALIDATED)
-        c.maxMintPerEpoch = uint128(vm.envOr("DIME_MAX_MINT_PER_EPOCH", commissioning ? uint256(100e18) : uint256(10_000e18)));
+        c.minStake = uint128(vm.envOr("DIME_MIN_STAKE", uint256(1e18))); // 1 DIME (UNVALIDATED)
+        c.maxMintPerEpoch = uint128(vm.envOr("DIME_MAX_MINT_PER_EPOCH", commissioning ? uint256(10_000e18) : uint256(1_000_000e18)));
         c.distributionShareBps = 2000;
         c.distributionReserveFloor = 10e6;
         c.epochSeconds = uint64(vm.envOr("DIME_EPOCH_SECONDS", uint256(commissioning ? 86400 : 3600)));

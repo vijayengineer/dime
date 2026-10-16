@@ -125,7 +125,11 @@ export interface CapacityView {
   /** Reservation the house would need for this trade. */
   houseReservationRequired: bigint;
   houseCapacityRemaining: bigint;
-  housePositionsRemaining: number;
+  /** null = no count limit (capacity is exposure-based). */
+  housePositionsRemaining: number | null;
+  /** The size doesn't fit in free house capacity now, so the request would wait in line. */
+  houseWouldWait?: boolean;
+  houseQueueLength?: number;
   matchedPairsRemaining: number;
   /** Indicative only: compatible opposite requests currently waiting. */
   matchedOppositeWaiting: number | null;
@@ -172,6 +176,8 @@ export interface OrderIntentMessage {
 export type IntentStatus =
   | "SIGNING"
   | "MATCHING"
+  /** Waiting in line for house capacity (exposure-based). Nothing is locked until it opens. */
+  | "QUEUED"
   | "SUBMITTED"
   | "OPENED"
   | "CAPACITY_UNAVAILABLE"
@@ -195,6 +201,8 @@ export interface IntentState {
   positionId?: string;
   updatedAt: number;
   timeline: { status: IntentStatus; at: number; note?: string }[];
+  /** While QUEUED: place in line, and whether smaller requests can currently fill a gap ahead of a blocked head. */
+  queue?: { position: number; canFillGap: boolean };
 }
 
 /* ---------------------------------------------------------------- positions */

@@ -388,7 +388,7 @@ export class DemoEngine {
         houseAvailable: admission.ok, houseReason: admission.ok ? undefined : admission.reason,
         houseReservationRequired: admission.reservation,
         houseCapacityRemaining: houseAvailableCapacity(this.book(), this.params),
-        housePositionsRemaining: this.params.maxConcurrentHousePositions - this.book().openHousePositions,
+        housePositionsRemaining: this.params.maxConcurrentHousePositions > 0 ? this.params.maxConcurrentHousePositions - this.book().openHousePositions : null,
         matchedPairsRemaining: this.params.maxConcurrentMatchedPairs - (this.pair ? 1 : 0),
         matchedOppositeWaiting: this.scenario.counterparty === "available" ? 1 : 0,
         provenance: "ESTIMATE",
@@ -490,12 +490,22 @@ export class DemoEngine {
     const d = quote.draft;
     const a = admitHouseTrade(this.book(), d.side, d.collateral, d.leverage, this.params);
     if (!a.ok) {
+      // Busy, not impossible: wait in line until capacity frees up or the request expires (as the backend does).
+      if (a.reason === "Not enough house reserve capacity" && Date.now() < (this.intent?.expiresAt ?? 0)) {
+        if (this.intent?.status !== "QUEUED") {
+          this.setIntent("QUEUED", { route: "HOUSE", queue: { position: 1, canFillGap: false } }, note ?? "House busy — waiting in line");
+          // Demo fixture: an exhausted house frees up after a few seconds, as if another position closed.
+          if (this.scenario.houseCapacity === "exhausted") this.intentTimers.push(setTimeout(() => { this.scenario = { ...this.scenario, houseCapacity: "normal" }; }, 4000));
+        }
+        this.intentTimers.push(setTimeout(() => { if (this.intent?.id === id && this.intent.status === "QUEUED") this.tryHouse(id, quote); }, 500));
+        return;
+      }
       this.setIntent("CAPACITY_UNAVAILABLE", { reason: `${a.reason}. Nothing was opened; your collateral is free again.` }, note);
       this.releaseIntentCollateral();
       this.publishHouse();
       return;
     }
-    this.setIntent("SUBMITTED", { route: "HOUSE" }, note);
+    this.setIntent("SUBMITTED", { route: "HOUSE", queue: undefined }, note);
     this.intentTimers.push(setTimeout(() => this.openPosition(id, quote, "HOUSE"), 650));
   }
 

@@ -21,7 +21,7 @@ Local measurements (local chain with 1 s blocks and a mock feed, so **not** Mona
 - relayer send→inclusion p50 768 ms
 - admit→opened p50 552 ms (n = 3)
 
-| DIME token + staking | `DimeToken` (non-transferable until a one-way admin switch), issuance of 0.1 DIME per $1 eligible house loss decaying above $1M reserve with a per-epoch cap, stake/unstake with next-epoch activation, USDC rewards to stakers. House page redesigned (Your DIME, House on Monad, DIME stats, reward curve, distribution, exposure) | Contracts: **33 passing** (adds emission decay, mint cap, stake/unstake, non-transferability, one-way enable, minter-only). Frontend 26 tests. Backend 18 unit + **15/15 e2e** on the new contracts |
+| DIME token + staking | `DimeToken` (non-transferable until a one-way admin switch), issuance of 10 DIME per $1 eligible house loss, falling with the cube of the reserve above $1M (1/125 at $5M), with a per-epoch cap, stake/unstake with next-epoch activation, USDC rewards to stakers. House page redesigned (Your DIME, House on Monad, DIME stats, reward curve, distribution, exposure) | Contracts: **33 passing** (adds emission decay, mint cap, stake/unstake, non-transferability, one-way enable, minter-only). Frontend 26 tests. Backend 18 unit + **15/15 e2e** on the new contracts |
 | Simplified trading | Ticket is side → margin → leverage; route, window and tolerance are auto-selected server-side (`shared/execution.ts`) and shown before signing | Demo engine tests updated (auto fallback, match-only when the house is full, capacity loss mid-window) |
 
 ## Mocks and labels
@@ -54,7 +54,7 @@ Local measurements (local chain with 1 s blocks and a mock feed, so **not** Mona
 0. **DIME transferability and legal review.** DIME is non-transferable until the admin schedules transfers with
    at least 7 days' notice. A transferable token whose stakers earn protocol revenue needs legal sign-off
    before `scheduleTransfers()` on mainnet. The emission
-   parameters (0.1 DIME/$, $1M decay, per-epoch cap) are UNVALIDATED; see the farming bound in CONTRACTS.md.
+   parameters (10 DIME/$, $1M knee, cubic decay, per-epoch cap) are UNVALIDATED; see the farming bound in CONTRACTS.md.
 
 1. **Matched gap policy.** Currently backstop = 0, so the winner's gross is capped at the loser's collateral.
 2. **House reserve protection.** A reservation of 20× margin is extended from free capacity, or the position is

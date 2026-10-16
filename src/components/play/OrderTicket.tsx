@@ -28,15 +28,22 @@ export function OrderTicket({
     [params],
   );
   const { house } = useApp();
-  // House first: a house trade reserves houseReservationMultiple × margin, so the largest margin the house can take
-  // right now is its free capacity / that multiple (and only while a house slot is open). Bigger sizes aren't offered.
-  const houseMax = useMemo(() => {
-    if (house.status !== "ok") return null;
+  // House first: a house trade reserves houseReservationMultiple × margin. Capacity is exposure-based:
+  // - houseMax: what fits in free capacity right now (opens straight away);
+  // - houseCeiling: what an idle house could take (bigger sizes aren't offered);
+  // in between, the request waits in line until capacity frees up, and smaller ones can fill gaps first.
+  const { houseMax, houseCeiling } = useMemo(() => {
+    if (house.status !== "ok") return { houseMax: null, houseCeiling: null };
     const h = house.value;
-    if (h.openHousePositions >= params.maxConcurrentHousePositions) return 0n;
-    return h.availableCapacity / BigInt(Math.max(1, params.houseReservationMultiple));
-  }, [house, params.maxConcurrentHousePositions, params.houseReservationMultiple]);
-  const fits = (m: bigint) => houseMax === null || m <= houseMax;
+    const mult = BigInt(Math.max(1, params.houseReservationMultiple));
+    const slotsFull = params.maxConcurrentHousePositions > 0 && h.openHousePositions >= params.maxConcurrentHousePositions;
+    const ceiling = (h.reserve * BigInt(params.houseMaxUtilisationBps)) / 10_000n / mult;
+    return { houseMax: slotsFull ? 0n : h.availableCapacity / mult, houseCeiling: ceiling };
+  }, [house, params.maxConcurrentHousePositions, params.houseReservationMultiple, params.houseMaxUtilisationBps]);
+  // Without the backend queue, only sizes that fit right now are offered (the old behaviour).
+  const queueOn = params.houseQueue;
+  const fits = (m: bigint) => (queueOn ? houseCeiling === null || m <= houseCeiling : houseMax === null || m <= houseMax);
+  const waits = (m: bigint) => queueOn && houseMax !== null && m > houseMax;
   const [side, setSide] = useState<Side | null>(null);
   const [margin, setMargin] = useState<bigint>(marginChips[0] ?? params.minMargin);
   const [leverage, setLeverage] = useState(100);
@@ -49,8 +56,8 @@ export function OrderTicket({
     const best = [...marginChips].reverse().find(fits);
     if (best !== undefined) setMargin(best);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [houseMax]);
-  const houseFull = houseMax !== null && houseMax < params.minMargin;
+  }, [houseCeiling, houseMax, queueOn]);
+  const houseFull = queueOn ? houseCeiling !== null && houseCeiling < params.minMargin : houseMax !== null && houseMax < params.minMargin;
   // $100 exposure cap: bigger margins get less leverage ($0.10 → 1000×, $1 → 100×).
   const levCap = maxLeverageFor(margin, params.maxLeverage);
   useEffect(() => { if (leverage > levCap) setLeverage(levCap); }, [levCap, leverage]);
@@ -88,7 +95,7 @@ export function OrderTicket({
   if (!signedIn) blockers.push("Sign in to trade.");
   else if (!access.canTrade) blockers.push("Join the live test (invite code + terms) to trade.");
   else if (free < margin) blockers.push(`You need ${usd(margin)} free. Fund your account first.`);
-  if (houseFull) blockers.push("The house is full right now. New trades open again as positions close.");
+  if (houseFull) blockers.push(queueOn ? "The house is too small for the minimum size right now." : "The house is full right now. New trades open again as positions close.");
   else if (quote && !quote.capacity.houseAvailable) blockers.push("The house can't take this trade right now. Try a smaller margin or the other side.");
   if (state !== "OPEN") blockers.push(`Protocol is ${state.replace("_", " ")}: new positions are paused.`);
   if (!priceOk) blockers.push("Price checks are failing, so new positions are paused.");
@@ -112,11 +119,20 @@ export function OrderTicket({
         <span className="label" id="margin-l"><span>Margin</span><span className="num muted">free {usd(free)}</span></span>
         <div className="chips" role="group" aria-labelledby="margin-l">
           {marginChips.map((m) => (
-            <button key={m.toString()} className="chip" aria-pressed={margin === m} disabled={!fits(m)} onClick={() => setMargin(m)}>{usd(m)}</button>
+            <button key={m.toString()} className="chip" aria-pressed={margin === m} disabled={!fits(m)} onClick={() => setMargin(m)}
+              title={fits(m) && waits(m) ? "Waits in line for house capacity" : undefined}>
+              {usd(m)}{fits(m) && waits(m) && <span aria-label=", waits in line" style={{ marginLeft: 4, opacity: 0.7 }}>⧗</span>}
+            </button>
           ))}
         </div>
-        {houseMax !== null && !houseFull && marginChips.some((m) => !fits(m)) && (
-          <p className="note" style={{ margin: "6px 0 0" }}>The house can take up to {usd(houseMax)} margin right now.</p>
+        {houseMax !== null && !houseFull && waits(margin) && (
+          <p className="note" style={{ margin: "6px 0 0" }}>
+            The house is busy: {usd(margin)} waits in line (up to 30 s, nothing is locked until it opens).
+            {houseMax >= params.minMargin ? ` Up to ${usd(houseMax)} opens straight away, and smaller sizes fill gaps first.` : " Smaller sizes fill gaps first."}
+          </p>
+        )}
+        {!houseFull && marginChips.some((m) => !fits(m)) && !waits(margin) && (queueOn ? houseCeiling : houseMax) !== null && (
+          <p className="note" style={{ margin: "6px 0 0" }}>The house can take up to {usd((queueOn ? houseCeiling : houseMax)!)} margin{queueOn ? "" : " right now"}.</p>
         )}
       </div>
 

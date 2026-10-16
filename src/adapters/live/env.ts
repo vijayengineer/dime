@@ -14,6 +14,9 @@ export interface LiveEnv {
   vault: Address;
   usdc: Address;
   usdcDecimals: number;
+  /** What the deployed contract/backend support (see MAINNET). */
+  emissionCurve: "cubic" | "inverse";
+  houseQueue: boolean;
 }
 
 export function readLiveEnv(): { ok: true; env: LiveEnv } | { ok: false; missing: string[] } {
@@ -43,6 +46,9 @@ export function readLiveEnv(): { ok: true; env: LiveEnv } | { ok: false; missing
       vault: raw.NEXT_PUBLIC_VAULT_ADDRESS as Address,
       usdc: raw.NEXT_PUBLIC_USDC_ADDRESS as Address,
       usdcDecimals: Number(raw.NEXT_PUBLIC_USDC_DECIMALS),
+      emissionCurve: (process.env.NEXT_PUBLIC_EMISSION_CURVE === "cubic" || process.env.NEXT_PUBLIC_EMISSION_CURVE === "inverse"
+        ? process.env.NEXT_PUBLIC_EMISSION_CURVE : MAINNET.emissionCurve) as "cubic" | "inverse",
+      houseQueue: process.env.NEXT_PUBLIC_HOUSE_QUEUE ? process.env.NEXT_PUBLIC_HOUSE_QUEUE === "1" : MAINNET.houseQueue,
     },
   };
 }

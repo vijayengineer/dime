@@ -7,13 +7,13 @@ import { toFloat } from "@/domain/fixed";
  * Flat at the base rate up to the decay threshold, then base × threshold / reserve.
  * Single series, so no legend; the dot marks the current reserve.
  */
-export function RewardCurve({ baseE18, decayTvl, reserve }: { baseE18: bigint; decayTvl: bigint; reserve: bigint }) {
+export function RewardCurve({ baseE18, decayTvl, reserve, curve = "cubic" }: { baseE18: bigint; decayTvl: bigint; reserve: bigint; curve?: "cubic" | "inverse" }) {
   const W = 360, H = 150, PL = 40, PR = 26, PT = 12, PB = 28;
   const base = toFloat(baseE18, 18);
   const t0 = Math.max(1, toFloat(decayTvl, 6));
   const xMin = 1, xMax = Math.max(t0 * 100, 1e8);
   const lx = (v: number) => PL + ((Math.log10(Math.max(v, xMin)) - Math.log10(xMin)) / (Math.log10(xMax) - Math.log10(xMin))) * (W - PL - PR);
-  const rate = (v: number) => (v <= t0 ? base : (base * t0) / v);
+  const rate = (v: number) => (v <= t0 ? base : base * (t0 / v) ** (curve === "cubic" ? 3 : 1));
   const ly = (r: number) => PT + (1 - r / base) * (H - PT - PB);
   const pts: string[] = [];
   for (let i = 0; i <= 60; i++) {

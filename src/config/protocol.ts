@@ -35,7 +35,7 @@ export interface ProtocolParams {
   matchedGapBackstop: bigint;
   /** DIME (18dp) issued per $1 of eligible house loss while the reserve ≤ emissionDecayTvl. UNVALIDATED. */
   dimePerUsdE18: bigint;
-  /** Above this house reserve (base units), issuance falls as decayTvl / reserve. UNVALIDATED. */
+  /** Above this house reserve (base units), issuance falls as (decayTvl / reserve)³. UNVALIDATED. */
   emissionDecayTvl: bigint;
   /** Hard cap on DIME issued per epoch (18dp). UNVALIDATED. */
   maxMintPerEpoch: bigint;
@@ -55,6 +55,10 @@ export interface ProtocolParams {
   maxPriceAgeMs: number;
   maxSourceDisagreementBps: number;
   matchedRewardsEnabled: false;
+  /** Shape of issuance above the knee in the deployed contract: cubic (current code) or 1/x (Monad mainnet deployed 2026-10-13). */
+  emissionCurve: "cubic" | "inverse";
+  /** The backend queues house requests that don't fit yet (backend/src/matching/houseQueue.ts). */
+  houseQueue: boolean;
 }
 
 export const PRICE_DECIMALS = 8;
@@ -75,13 +79,13 @@ export const defaultParams: ProtocolParams = {
   protectionTriggerBps: 9000,
   houseMaxUtilisationBps: 8000,
   houseMaxNetNotionalMultiple: 200,
-  maxConcurrentHousePositions: 10,
+  maxConcurrentHousePositions: 0, // 0 = no count limit; capacity is exposure-based
   maxConcurrentMatchedPairs: 25,
   matchedGapBackstop: 0n,
-  dimePerUsdE18: 10n ** 17n, // 0.1 DIME per $1
+  dimePerUsdE18: 10n * 10n ** 18n, // 10 DIME per $1
   emissionDecayTvl: usd(1_000_000),
-  maxMintPerEpoch: 10_000n * 10n ** 18n,
-  minStake: 10n ** 17n, // 0.1 DIME
+  maxMintPerEpoch: 1_000_000n * 10n ** 18n,
+  minStake: 10n ** 18n, // 1 DIME
   distributionShareBps: 2000,
   distributionReserveFloor: usd(10),
   epochSeconds: 24 * 60 * 60,
@@ -91,6 +95,8 @@ export const defaultParams: ProtocolParams = {
   maxPriceAgeMs: 3000,
   maxSourceDisagreementBps: 15,
   matchedRewardsEnabled: false,
+  emissionCurve: "cubic",
+  houseQueue: true,
 };
 
 export const MARKET = "BTC-USD" as const;

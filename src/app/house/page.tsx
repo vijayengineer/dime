@@ -77,10 +77,10 @@ export default function HousePage() {
         <section className="card" aria-labelledby="curve-title">
           <div className="card-title"><h2 id="curve-title">Reward curve</h2></div>
           {params && house ? (
-            <RewardCurve baseE18={params.dimePerUsdE18} decayTvl={params.emissionDecayTvl} reserve={house.reserve} />
+            <RewardCurve baseE18={params.dimePerUsdE18} decayTvl={params.emissionDecayTvl} reserve={house.reserve} curve={params.emissionCurve} />
           ) : <div className="empty">Loading…</div>}
           <p className="note" style={{ marginBottom: 0 }}>
-            {params ? `${dime(params.dimePerUsdE18, 2)} DIME per $1 lost until the house holds ${usd(params.emissionDecayTvl, 0)}; then it halves every time the house doubles. Capped at ${dime(params.maxMintPerEpoch, 0)} DIME per epoch.` : ""}
+            {params ? `${dime(params.dimePerUsdE18, 2)} DIME per $1 lost until the house holds ${usd(params.emissionDecayTvl, 0)}; then ${params.emissionCurve === "cubic" ? "it falls with the cube of the house size (1/8 at 2×, 1/125 at 5×)" : "it halves every time the house doubles"}. Capped at ${dime(params.maxMintPerEpoch, 0)} DIME per epoch.` : ""}
           </p>
         </section>
         <Distribution />

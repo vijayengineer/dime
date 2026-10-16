@@ -73,7 +73,7 @@ function intentWire(r: IntentRow) {
     status: r.status, route: r.route ?? undefined, reason: r.reason ?? undefined,
     matchDeadline: r.match_deadline * 1000, expiresAt: r.expiry * 1000,
     txHash: r.tx_id ?? undefined, positionId: r.position_id ?? undefined, updatedAt: r.updated_at,
-    timeline: JSON.parse(r.timeline),
+    timeline: JSON.parse(r.timeline), queue: matcher.queueInfo(r) ?? undefined,
   };
 }
 const notify = (r: IntentRow) => publish(`intents:${r.user}`, intentWire(r));
@@ -107,6 +107,12 @@ const matcher = new Matcher(
     submitMarginMs: 1200,
     houseAfterDeadlineMs: 1500,
     positionIdFor: (r) => positionIdFor(cfg.CHAIN_ID, cfg.manifest.protocol, r.user as Address, BigInt(r.nonce)),
+    capacity: () => chainState && chainState.state === "OPEN" ? {
+      available: chainState.house.availableCapacity, reserve: chainState.house.reserve, netDirectional: chainState.house.netDirectionalNotional,
+      reservationMultiple: BigInt(chainState.config.houseReservationMultiple), netNotionalMultiple: BigInt(chainState.config.houseMaxNetNotionalMultiple),
+    } : null,
+    headHoldMs: cfg.HOUSE_HEAD_HOLD_MS,
+    maxHouseQueue: cfg.MAX_HOUSE_QUEUE,
   },
 );
 setInterval(() => void matcher.tick().catch((e) => log.error({ err: e.message }, "matcher tick failed")), 200);
@@ -215,8 +221,10 @@ app.post("/v1/quotes", { preHandler: authenticate, config: { rateLimit: { max: 1
     const nn = h.netDirectionalNotional + (isLong ? coll * BigInt(d.data.leverage) : -(coll * BigInt(d.data.leverage)));
     const ab = (x: bigint) => (x < 0n ? -x : x);
     if (chainState.state !== "OPEN") return `Protocol is ${chainState.state}`;
-    if (h.openHousePositions >= k.maxConcurrentHousePositions) return "House position slots are full";
-    if (res > h.availableCapacity) return "Not enough house reserve capacity";
+    if (k.maxConcurrentHousePositions > 0 && h.openHousePositions >= k.maxConcurrentHousePositions) return "House position slots are full";
+    // Bigger than the whole house could ever hold: no point queueing.
+    if (res > (h.reserve * BigInt(k.houseMaxUtilisationBps)) / 10_000n) return "Too large for the house right now";
+    if (!matcher.canQueueHouse()) return "The house queue is full";
     if (ab(nn) > h.reserve * BigInt(k.houseMaxNetNotionalMultiple) && ab(nn) > ab(h.netDirectionalNotional)) return "House is at its concentration limit";
     return undefined;
   })();
@@ -238,7 +246,9 @@ app.post("/v1/quotes", { preHandler: authenticate, config: { rateLimit: { max: 1
     feeBps: k.profitFeeBps, exampleMovePct: 0.05, exampleNetProfit: gross - fee, exampleFee: fee,
     capacity: {
       houseAvailable: !houseReason, houseReason, houseReservationRequired: reservation, houseCapacityRemaining: h.availableCapacity,
-      housePositionsRemaining: k.maxConcurrentHousePositions - h.openHousePositions,
+      housePositionsRemaining: k.maxConcurrentHousePositions > 0 ? k.maxConcurrentHousePositions - h.openHousePositions : null,
+      // Fits in free capacity now? If not, the request waits in line (smaller ones can fill gaps).
+      houseWouldWait: reservation > h.availableCapacity, houseQueueLength: matcher.houseQueueLength(),
       matchedPairsRemaining: k.maxConcurrentMatchedPairs - h.openMatchedPairs,
       matchedOppositeWaiting: matcher.waiting(d.data.collateral, d.data.leverage, isLong ? 1 : 0),
     },
@@ -282,16 +292,17 @@ app.post("/v1/intents", { preHandler: authenticate, config: { rateLimit: { max: 
   if (store.intentByNonce(m.user, m.nonce.toString())) return json(reply, 409, err("NONCE_USED", "Nonce already used"));
   const user = m.user.toLowerCase();
   const row: IntentRow = {
-    id: randomUUID(), user, nonce: m.nonce.toString(), status: m.routeMask & 1 ? "MATCHING" : "SUBMITTED",
+    id: randomUUID(), user, nonce: m.nonce.toString(), status: m.routeMask & 1 ? "MATCHING" : "QUEUED",
     side: m.side as 0 | 1, collateral: m.collateral.toString(), leverage: m.leverage, route_mask: m.routeMask,
     match_deadline: Number(m.matchDeadline), expiry: Number(m.expiry), price_limit: m.priceLimit.toString(),
     config_version: m.configVersion, match_window_ms: b.data.matchWindowMs ?? Math.max(0, (Number(m.matchDeadline) - nowS) * 1000),
     slippage_bps: b.data.slippageBps ?? 0, message: toWire(m), signature: sig, route: m.routeMask & 1 ? null : "HOUSE",
     reason: null, tx_id: null, position_id: null,
-    timeline: JSON.stringify([{ status: m.routeMask & 1 ? "MATCHING" : "SUBMITTED", at: Date.now() }]),
+    timeline: JSON.stringify([{ status: m.routeMask & 1 ? "MATCHING" : "QUEUED", at: Date.now() }]),
     created_at: Date.now(), updated_at: Date.now(),
   };
   if (row.status === "MATCHING" && !matcher.canAdmit(row)) return json(reply, 429, err("QUEUE_FULL", "Too many waiting requests at this size; try again"));
+  if (row.status === "QUEUED" && !matcher.canQueueHouse()) return json(reply, 429, err("QUEUE_FULL", "The house queue is full; try again"));
   store.insertIntent(row);
   const body = toWire(intentWire(row));
   store.saveIdem(`intent:${key}`, body);
@@ -317,7 +328,7 @@ app.post("/v1/intents/:id/cancel", { preHandler: authenticate, config: { rateLim
     return json(reply, 401, err("BAD_SIGNATURE", "Cancellation must be signed by the requesting wallet"));
   }
   if (TERMINAL.includes(r.status)) return json(reply, 409, err("TERMINAL", `Already ${r.status}`));
-  if (!store.transition(id, ["MATCHING"], "CANCELLED", { reason: "Cancelled by you. Nothing was opened." })) {
+  if (!store.transition(id, ["MATCHING", "QUEUED"], "CANCELLED", { reason: "Cancelled by you. Nothing was opened." })) {
     return json(reply, 409, err("TOO_LATE", "Already submitted; you can still invalidate the nonce on-chain with cancelNonce"));
   }
   notify(store.getIntent(id)!);
