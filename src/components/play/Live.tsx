@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { reasonText } from "@/domain/copy";
 import type { ProtocolParams } from "@/config/protocol";
 import { cappedGrossPnl, distanceToLiqBps, profitFee } from "@/domain/math";
@@ -9,6 +9,7 @@ import { useServices } from "@/state/services";
 import { INTENT_COPY } from "../StatusRail";
 import { pct, price, rights as fmtRights, shortHash, usd } from "../format";
 import { Icon, Prov } from "../ui";
+import { fromPosition, fromSettlement, PnlShareSheet, type PnlCardData } from "./PnlCard";
 
 /** Sub-dollar amounts get 3 decimals so rounding never overstates a small result. */
 const heroDp = (v: bigint) => (v > -1_000_000n && v < 1_000_000n ? 3 : 2);
@@ -47,6 +48,8 @@ export function PositionCard({ position: p, snap, params, closing }: { position:
   const s = useServices();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [card, setCard] = useState<PnlCardData | null>(null);
+  const closeShare = useCallback(() => setCard(null), []);
   const mark = snap?.reference?.price ?? snap?.estimate;
   const demo = s.mode === "demo";
 
@@ -111,9 +114,14 @@ export function PositionCard({ position: p, snap, params, closing }: { position:
         </ul>
       </details>
       {err && <p className="err-box" role="alert">{err}</p>}
-      <button className="btn primary block" style={{ marginTop: 14 }} onClick={close} disabled={busy || closing}>
-        {busy || closing ? "Closing…" : `Close at ~${mark ? price(mark) : "market"}`}
-      </button>
+      <div className="sides" style={{ marginTop: 14 }}>
+        {/* Snapshot at click: the card shouldn't redraw on every tick while the sheet is open. */}
+        <button className="btn" onClick={() => mark && setCard(fromPosition(p, mark, net, Date.now()))} disabled={!mark}>Share P&amp;L</button>
+        <button className="btn primary" onClick={close} disabled={busy || closing}>
+          {busy || closing ? "Closing…" : `Close at ~${mark ? price(mark) : "market"}`}
+        </button>
+      </div>
+      <PnlShareSheet d={card} demo={demo} open={card !== null} onClose={closeShare} />
       <p className="note" style={{ marginBottom: 0 }}>Final P&amp;L is set by the contract at the verified settlement price and may differ from this estimate.</p>
     </section>
   );
@@ -122,6 +130,9 @@ export function PositionCard({ position: p, snap, params, closing }: { position:
 /* ------------------------------------------------------------------ settlement */
 export function SettlementCard({ s, onDone }: { s: Settlement; onDone: () => void }) {
   const svc = useServices();
+  const [sharing, setSharing] = useState(false);
+  const closeShare = useCallback(() => setSharing(false), []);
+  const card = useMemo(() => fromSettlement(s), [s]);
   const win = s.netPnl > 0n;
   const flat = s.netPnl === 0n;
   return (
@@ -151,8 +162,10 @@ export function SettlementCard({ s, onDone }: { s: Settlement; onDone: () => voi
         </p>
       )}
       <div className="sides" style={{ marginTop: 12 }}>
+        <button className={`btn${win ? " primary" : ""}`} onClick={() => setSharing(true)}>Share P&amp;L card</button>
         <button className="btn" onClick={onDone}>Done</button>
       </div>
+      <PnlShareSheet d={card} demo={svc.mode === "demo"} open={sharing} onClose={closeShare} />
       {svc.mode === "demo" && <p className="note" style={{ marginBottom: 0 }}>Demo settlement: computed by the local engine, not a contract.</p>}
     </section>
   );
